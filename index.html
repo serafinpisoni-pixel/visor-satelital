@@ -1,0 +1,665 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Visor satelital">
+<meta name="theme-color" content="#1f3d2b">
+<link rel="apple-touch-icon" id="icono">
+<title>Visor satelital · Sentinel-2</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="https://unpkg.com/@geoman-io/leaflet-geoman-free@2.17.0/dist/leaflet-geoman.css">
+<style>
+  :root{--verde:#1f3d2b;--verde2:#2e7d4f;--fondo:#ffffff;--texto:#1d1d1f;--gris:#6b7280;--borde:#e5e7eb}
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:var(--texto);background:#000}
+  #map{position:fixed;inset:0}
+  #chip{position:fixed;top:calc(env(safe-area-inset-top) + 10px);left:10px;z-index:900;background:rgba(31,61,43,.92);color:#fff;
+        padding:7px 12px;border-radius:20px;font-size:14px;font-weight:600;box-shadow:0 2px 8px rgba(0,0,0,.3)}
+  #sheet{position:fixed;left:0;right:0;bottom:0;z-index:1000;background:var(--fondo);border-radius:16px 16px 0 0;
+         box-shadow:0 -4px 20px rgba(0,0,0,.25);max-height:58vh;overflow-y:auto;-webkit-overflow-scrolling:touch;
+         padding:0 14px calc(env(safe-area-inset-bottom) + 12px);transition:max-height .25s}
+  #sheet.min{max-height:64px;overflow:hidden}
+  #grab{position:sticky;top:0;background:var(--fondo);padding:8px 0 6px;text-align:center;cursor:pointer;z-index:2}
+  #grab span{display:inline-block;width:42px;height:5px;border-radius:3px;background:#c7c7cc}
+  #grab div{font-size:12px;color:var(--gris);margin-top:4px}
+  @media (min-width:900px){
+    #sheet{left:12px;right:auto;bottom:12px;top:calc(env(safe-area-inset-top) + 56px);width:380px;max-height:none;border-radius:16px}
+    #sheet.min{max-height:64px;top:auto}
+  }
+  h3{font-size:15px;margin:14px 0 8px;color:var(--verde)}
+  .row{display:flex;gap:8px;align-items:center;margin:6px 0;flex-wrap:wrap}
+  .row label{font-size:13px;color:var(--gris)}
+  button,.btn{font:inherit;font-size:14px;border:1px solid var(--borde);background:#f6f7f8;color:var(--texto);border-radius:10px;
+              padding:9px 11px;cursor:pointer;display:inline-flex;align-items:center;gap:5px}
+  button:active,.btn:active{transform:scale(.97)}
+  button.on{background:#fff8d6;border-color:#e0b400}
+  .primary{background:var(--verde2);color:#fff;border-color:var(--verde2);font-weight:600}
+  button:disabled{opacity:.45}
+  input[type=number],input[type=text],input[type=date]{font:inherit;font-size:16px;border:1px solid var(--borde);border-radius:10px;padding:8px 10px;background:#fff;min-width:0}
+  input[type=text]{flex:1}
+  input[type=number]{width:96px}
+  input[type=date]{flex:1}
+  input[type=range]{flex:1}
+  .muted{font-size:13px;color:var(--gris)}
+  .lista{display:flex;flex-direction:column;gap:6px;margin-top:6px}
+  .esc{display:flex;align-items:center;justify-content:space-between;border:1px solid var(--borde);border-radius:10px;padding:8px 10px;cursor:pointer}
+  .esc.sel{border-color:var(--verde2);background:#eef7f1}
+  .esc b{font-size:15px}
+  .esc small{color:var(--gris);font-size:12px;display:block}
+  .tag{font-size:12px;padding:3px 7px;border-radius:8px;background:#f0f0f0;white-space:nowrap}
+  .tag.ok{background:#dff3e6;color:#17633a}.tag.mal{background:#fde2e1;color:#9b1c1c}.tag.med{background:#fff1cc;color:#7a5a00}
+  .seg{display:flex;border:1px solid var(--borde);border-radius:10px;overflow:hidden}
+  .seg button{border:0;border-radius:0;flex:1;justify-content:center;background:#fff}
+  .seg button.act{background:var(--verde);color:#fff}
+  .stats{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin:8px 0}
+  .stats div{background:#f6f7f8;border-radius:10px;padding:7px 9px}
+  .stats small{display:block;color:var(--gris);font-size:11px}
+  .stats b{font-size:16px}
+  .barra{height:12px;border-radius:6px;background:linear-gradient(90deg,#a50026,#d73027,#f46d43,#fdae61,#fee08b,#ffffbf,#d9ef8b,#a6d96a,#66bd63,#1a9850,#006837)}
+  .ejes{display:flex;justify-content:space-between;font-size:11px;color:var(--gris)}
+  .clases{display:flex;height:16px;border-radius:6px;overflow:hidden;margin-top:6px}
+  .foot{font-size:11px;color:var(--gris);margin-top:14px;line-height:1.4}
+  .foot a{color:var(--gris)}
+  #busy{position:fixed;inset:0;z-index:2000;background:rgba(0,0,0,.35);display:none;align-items:center;justify-content:center}
+  #busy div{background:#fff;border-radius:14px;padding:16px 20px;font-size:15px;display:flex;gap:10px;align-items:center;max-width:80vw}
+  #busy i{width:18px;height:18px;border:3px solid #cfd8d3;border-top-color:var(--verde2);border-radius:50%;animation:g 0.8s linear infinite;flex:none}
+  @keyframes g{to{transform:rotate(360deg)}}
+  #toast{position:fixed;left:50%;transform:translateX(-50%);top:calc(env(safe-area-inset-top) + 56px);z-index:2100;background:rgba(29,29,31,.92);color:#fff;
+         padding:10px 14px;border-radius:12px;font-size:14px;max-width:88vw;display:none;text-align:center}
+  #modal{position:fixed;inset:0;z-index:2200;background:rgba(0,0,0,.85);display:none;flex-direction:column;align-items:center;justify-content:center;padding:20px}
+  #modal img{max-width:100%;max-height:75vh;border-radius:6px;background:#fff}
+  #modal p{color:#fff;font-size:14px;text-align:center}
+  .pix{image-rendering:pixelated;image-rendering:crisp-edges}
+  .hint{font-size:13px;background:#fff8d6;border-radius:10px;padding:8px 10px;margin:6px 0;display:none}
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="chip">Visor satelital · Sentinel-2</div>
+
+<div id="sheet">
+  <div id="grab"><span></span><div id="grabTxt">Ocultar panel</div></div>
+
+  <section>
+    <h3>1 · Área</h3>
+    <div class="row">
+      <button id="bLoc">📍 Mi ubicación</button>
+      <button id="bPunto">🎯 Tocar punto</button>
+      <button id="bDraw">✏️ Dibujar</button>
+      <label class="btn">📂 Cargar<input id="file" type="file" accept=".kml,.kmz,.geojson,.json,.zip" hidden></label>
+    </div>
+    <div class="hint" id="hint"></div>
+    <div class="row">
+      <label for="radio">Radio alrededor del punto (m)</label>
+      <input id="radio" type="number" inputmode="numeric" value="650" min="50" max="15000" step="50">
+    </div>
+    <div class="row">
+      <input id="coords" type="text" placeholder="-34.3000, -60.5252  o link de Google Maps" autocomplete="off">
+      <button id="bIr">Ir</button>
+    </div>
+    <div class="muted" id="aoiInfo">Elegí un área: tu ubicación, un punto, un polígono dibujado o un archivo KML / KMZ / GeoJSON / shapefile en .zip.</div>
+  </section>
+
+  <section>
+    <h3>2 · Imágenes</h3>
+    <div class="row"><label>Desde</label><input id="d1" type="date"><label>Hasta</label><input id="d2" type="date"></div>
+    <div class="row"><label>Nubes máx. en la escena</label><input id="nub" type="range" min="5" max="100" step="5" value="60"><span id="nubTxt" class="muted">60%</span></div>
+    <div class="row">
+      <button id="bBuscar" class="primary" disabled>Buscar imágenes</button>
+      <button id="bUltima" disabled>⚡ Última limpia</button>
+    </div>
+    <div id="lista" class="lista"></div>
+  </section>
+
+  <section id="secRes" hidden>
+    <h3>3 · Resultado <span id="resFecha" class="muted"></span></h3>
+    <div class="seg" id="seg"><button data-v="rgb" class="act">Color real</button><button data-v="ndvi">NDVI</button></div>
+    <div id="leyenda" style="display:none;margin-top:8px"><div class="barra"></div><div class="ejes"><span>0</span><span>0,3</span><span>0,6</span><span>0,9</span></div></div>
+    <div class="row"><label>Transparencia</label><input id="opac" type="range" min="0" max="100" value="100"></div>
+    <div id="stats"></div>
+    <div class="row"><button id="bJpg" class="primary">⬇️ Descargar JPG</button><span class="muted">Tocá el mapa para ver el NDVI de un punto</span></div>
+  </section>
+
+  <div class="foot">
+    Imágenes: Copernicus Sentinel-2 (ESA), nivel L2A colección 1, vía <a href="https://registry.opendata.aws/sentinel-2-l2a-cogs/" target="_blank" rel="noopener">AWS Open Data</a> y Earth Search de Element 84. Contiene datos modificados de Copernicus Sentinel. Mapa base: Esri World Imagery. Resolución 10 m.
+  </div>
+</div>
+
+<div id="busy"><div><i></i><span id="busyTxt">Cargando…</span></div></div>
+<div id="toast"></div>
+<div id="modal"><img id="modalImg" alt=""><p>Mantené apretada la imagen y elegí «Guardar en Fotos».</p><button id="bCerrar">Cerrar</button></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/@geoman-io/leaflet-geoman-free@2.17.0/dist/leaflet-geoman.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/geotiff@2.1.3/dist-browser/geotiff.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.11.0/proj4.js"></script>
+<script src="https://unpkg.com/@tmcw/togeojson@5.8.1/dist/togeojson.umd.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://unpkg.com/shpjs@4.0.4/dist/shp.min.js"></script>
+<script>
+'use strict';
+// ---------- Configuración ----------
+const STAC = 'https://earth-search.aws.element84.com/v1/search';
+const COLECCION = 'sentinel-2-c1-l2a';
+const AREA_MAX_HA = 150000;          // límite para no colgar el teléfono
+const LADO_MAX_PX = 1400;            // tamaño máximo de la imagen generada
+const NUBE_SCL = new Set([3, 8, 9, 10]); // sombra, nube media, nube alta, cirro
+const PALETA = ['#a50026','#d73027','#f46d43','#fdae61','#fee08b','#ffffbf','#d9ef8b','#a6d96a','#66bd63','#1a9850','#006837'];
+const NDVI_MIN = 0, NDVI_MAX = 0.9;
+const R = 6378137;
+
+// ---------- Utilidades ----------
+const $ = s => document.querySelector(s);
+const fmt = (x, d = 2) => Number(x).toLocaleString('es-AR', {minimumFractionDigits: d, maximumFractionDigits: d});
+const fmt0 = x => Math.round(x).toLocaleString('es-AR');
+const mx = lon => R * lon * Math.PI / 180;
+const my = lat => R * Math.log(Math.tan(Math.PI / 4 + lat * Math.PI / 360));
+const ilon = x => x / R * 180 / Math.PI;
+const ilat = y => (2 * Math.atan(Math.exp(y / R)) - Math.PI / 2) * 180 / Math.PI;
+const fechaLarga = iso => { const [y, m, d] = iso.slice(0, 10).split('-'); return `${d}/${m}/${y}`; };
+let toastT;
+function toast(msg, ms = 3500) { const t = $('#toast'); t.textContent = msg; t.style.display = 'block'; clearTimeout(toastT); toastT = setTimeout(() => t.style.display = 'none', ms); }
+function busy(msg) { if (msg) { $('#busyTxt').textContent = msg; $('#busy').style.display = 'flex'; } else $('#busy').style.display = 'none'; }
+const store = { get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } }, set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} } };
+
+const PAL_RGB = PALETA.map(h => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)]);
+function colorNdvi(v) {
+  let t = (v - NDVI_MIN) / (NDVI_MAX - NDVI_MIN); t = Math.max(0, Math.min(1, t)) * (PAL_RGB.length - 1);
+  const i = Math.min(Math.floor(t), PAL_RGB.length - 2), f = t - i, a = PAL_RGB[i], b = PAL_RGB[i + 1];
+  return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
+}
+
+// ---------- Mapa ----------
+const map = L.map('map', {zoomControl: false, attributionControl: true}).setView([-34.3, -60.52], 12);
+L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {maxZoom: 19, attribution: 'Esri, Maxar, Earthstar'}).addTo(map);
+L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', {maxZoom: 19, opacity: .8}).addTo(map);
+L.control.zoom({position: 'topright'}).addTo(map);
+map.pm.setLang('es');
+
+const S = { aoi: null, aoiLayer: null, centro: null, centroLayer: null, modo: null, grupos: [], sel: null, res: null, overlay: null, vista: 'rgb', jpg: {} };
+
+// ---------- Área ----------
+function anillosDe(geom) {
+  if (geom.type === 'Polygon') return [geom.coordinates];
+  if (geom.type === 'MultiPolygon') return geom.coordinates;
+  return [];
+}
+function areaHa(geom) {
+  const ringArea = ring => { let a = 0; for (let i = 0; i < ring.length - 1; i++) { const [x1, y1] = ring[i], [x2, y2] = ring[i + 1];
+      a += (x2 - x1) * Math.PI / 180 * (2 + Math.sin(y1 * Math.PI / 180) + Math.sin(y2 * Math.PI / 180)); } return Math.abs(a * R * R / 2); };
+  let tot = 0; for (const poly of anillosDe(geom)) poly.forEach((ring, k) => tot += (k === 0 ? 1 : -1) * ringArea(ring));
+  return tot / 10000;
+}
+function bboxDe(geom) {
+  let w = 180, s = 90, e = -180, n = -90;
+  for (const poly of anillosDe(geom)) for (const ring of poly) for (const [x, y] of ring) { if (x < w) w = x; if (x > e) e = x; if (y < s) s = y; if (y > n) n = y; }
+  return [w, s, e, n];
+}
+function circulo(lat, lon, r) {
+  const pts = [], d = r / 6371008.8, la = lat * Math.PI / 180, lo = lon * Math.PI / 180;
+  for (let i = 0; i <= 96; i++) {
+    const b = 2 * Math.PI * i / 96;
+    const la2 = Math.asin(Math.sin(la) * Math.cos(d) + Math.cos(la) * Math.sin(d) * Math.cos(b));
+    const lo2 = lo + Math.atan2(Math.sin(b) * Math.sin(d) * Math.cos(la), Math.cos(d) - Math.sin(la) * Math.sin(la2));
+    pts.push([lo2 * 180 / Math.PI, la2 * 180 / Math.PI]);
+  }
+  pts[pts.length - 1] = pts[0];
+  return {type: 'Polygon', coordinates: [pts]};
+}
+function setAOI(geom, etiqueta, ajustar = true) {
+  const ha = areaHa(geom);
+  if (!(ha > 0)) { toast('El área no es válida.'); return; }
+  if (ha > AREA_MAX_HA) { toast(`El área tiene ${fmt0(ha)} ha. El máximo es ${fmt0(AREA_MAX_HA)} ha.`); return; }
+  S.aoi = geom;
+  if (S.aoiLayer) map.removeLayer(S.aoiLayer);
+  S.aoiLayer = L.geoJSON(geom, {style: {color: '#ffffff', weight: 2.5, fill: false, dashArray: null}, interactive: false}).addTo(map);
+  if (ajustar) map.fitBounds(S.aoiLayer.getBounds(), {padding: [30, 30], maxZoom: 16});
+  $('#aoiInfo').innerHTML = `<b>${etiqueta}</b> · ${fmt0(ha)} ha`;
+  $('#bBuscar').disabled = false; $('#bUltima').disabled = false;
+  limpiarResultado(); S.grupos = []; $('#lista').innerHTML = '';
+  store.set('aoi', {geom, etiqueta});
+}
+function setCentro(lat, lon, etiqueta) {
+  S.centro = [lat, lon];
+  if (S.centroLayer) map.removeLayer(S.centroLayer);
+  S.centroLayer = L.circleMarker([lat, lon], {radius: 6, color: '#fff', weight: 2, fillColor: '#e53935', fillOpacity: 1, interactive: false}).addTo(map);
+  const r = Math.max(50, Math.min(15000, +$('#radio').value || 650));
+  setAOI(circulo(lat, lon, r), `${etiqueta} · radio ${fmt0(r)} m`);
+}
+function quitarCentro() { S.centro = null; if (S.centroLayer) { map.removeLayer(S.centroLayer); S.centroLayer = null; } }
+
+function setModo(m) {
+  S.modo = m;
+  $('#bPunto').classList.toggle('on', m === 'punto');
+  $('#bDraw').classList.toggle('on', m === 'dibujo');
+  const h = $('#hint');
+  if (m === 'punto') { h.textContent = 'Tocá el mapa donde quieras centrar el área.'; h.style.display = 'block'; }
+  else if (m === 'dibujo') { h.textContent = 'Tocá el mapa para marcar los vértices. Para cerrar, tocá el primer vértice.'; h.style.display = 'block'; }
+  else h.style.display = 'none';
+  if (m !== 'dibujo' && map.pm.globalDrawModeEnabled()) map.pm.disableDraw();
+}
+
+$('#bLoc').onclick = () => {
+  if (!navigator.geolocation) { toast('Este navegador no permite ubicación.'); return; }
+  busy('Buscando tu ubicación…');
+  navigator.geolocation.getCurrentPosition(p => {
+    busy(); setModo(null);
+    setCentro(p.coords.latitude, p.coords.longitude, 'Mi ubicación');
+  }, err => { busy(); toast(err.code === 1 ? 'No diste permiso de ubicación. Activalo en Ajustes › Safari › Ubicación.' : 'No se pudo obtener la ubicación.'); },
+  {enableHighAccuracy: true, timeout: 15000, maximumAge: 30000});
+};
+$('#bPunto').onclick = () => setModo(S.modo === 'punto' ? null : 'punto');
+$('#bDraw').onclick = () => {
+  if (S.modo === 'dibujo') { setModo(null); return; }
+  setModo('dibujo');
+  map.pm.enableDraw('Polygon', {snappable: false, templineStyle: {color: '#ffeb3b'}, hintlineStyle: {color: '#ffeb3b', dashArray: [5, 5]}, pathOptions: {color: '#ffeb3b'}});
+  minimizar(true);
+};
+map.on('pm:create', e => {
+  const g = e.layer.toGeoJSON().geometry; map.removeLayer(e.layer);
+  setModo(null); quitarCentro(); minimizar(false);
+  setAOI(g, 'Polígono dibujado', false);
+});
+$('#radio').onchange = () => { if (S.centro) setCentro(S.centro[0], S.centro[1], 'Punto'); };
+
+// Coordenadas o links
+function dmsADec(txt) {
+  const re = /(\d+(?:\.\d+)?)\s*°\s*(\d+(?:\.\d+)?)?\s*['’′]?\s*(\d+(?:\.\d+)?)?\s*["”″]?\s*([NSEWO])/gi;
+  const out = []; let m;
+  while ((m = re.exec(txt))) { let v = +m[1] + (+m[2] || 0) / 60 + (+m[3] || 0) / 3600; if (/[SWO]/i.test(m[4])) v = -v; out.push({v, eje: /[NS]/i.test(m[4]) ? 'lat' : 'lon'}); }
+  if (out.length === 2) { const lat = out.find(o => o.eje === 'lat'), lon = out.find(o => o.eje === 'lon'); if (lat && lon) return [lat.v, lon.v]; }
+  return null;
+}
+function parseCoords(txt) {
+  txt = decodeURIComponent(txt.trim());
+  if (/goo\.gl|maps\.app/.test(txt)) return 'corto';
+  let m = txt.match(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/) || txt.match(/[?&](?:q|query|ll|center)=(-?\d+\.\d+),\s*(-?\d+\.\d+)/) || txt.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
+  if (m) return [+m[1], +m[2]];
+  const d = dmsADec(txt); if (d) return d;
+  m = txt.match(/(-?\d+(?:[.,]\d+)?)\s*[,;\s]\s*(-?\d+(?:[.,]\d+)?)/);
+  if (m) { const a = +m[1].replace(',', '.'), b = +m[2].replace(',', '.'); if (Math.abs(a) <= 90 && Math.abs(b) <= 180) return [a, b]; }
+  return null;
+}
+$('#bIr').onclick = () => {
+  const c = parseCoords($('#coords').value);
+  if (c === 'corto') { toast('Los links cortos (maps.app.goo.gl) no se pueden leer desde acá. Abrilo en Google Maps y copiá las coordenadas que aparecen al mantener apretado el punto.', 7000); return; }
+  if (!c) { toast('No reconocí las coordenadas. Ejemplo: -34.3000, -60.5252'); return; }
+  setModo(null); setCentro(c[0], c[1], 'Punto');
+};
+$('#coords').addEventListener('keydown', e => { if (e.key === 'Enter') $('#bIr').click(); });
+
+// Archivos
+function poligonosDe(gj) {
+  const polys = [], puntos = [];
+  const quitarZ = ring => ring.map(p => [p[0], p[1]]);
+  const geo = g => {
+    if (!g) return;
+    if (g.type === 'Polygon') polys.push(g.coordinates.map(quitarZ));
+    else if (g.type === 'MultiPolygon') g.coordinates.forEach(p => polys.push(p.map(quitarZ)));
+    else if (g.type === 'GeometryCollection') g.geometries.forEach(geo);
+    else if (g.type === 'LineString') { const c = g.coordinates; if (c.length >= 4 && c[0][0] === c[c.length - 1][0] && c[0][1] === c[c.length - 1][1]) polys.push([quitarZ(c)]); }
+    else if (g.type === 'Point') puntos.push(g.coordinates);
+  };
+  const recorrer = o => { if (!o) return; if (Array.isArray(o)) o.forEach(recorrer); else if (o.type === 'FeatureCollection') o.features.forEach(recorrer); else if (o.type === 'Feature') geo(o.geometry); else geo(o); };
+  recorrer(gj);
+  return {polys, puntos};
+}
+$('#file').onchange = async e => {
+  const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+  busy('Leyendo el archivo…');
+  try {
+    const n = f.name.toLowerCase(); let gj;
+    const kml = txt => toGeoJSON.kml(new DOMParser().parseFromString(txt, 'text/xml'));
+    if (n.endsWith('.kmz')) {
+      const zip = await JSZip.loadAsync(f); const k = Object.keys(zip.files).find(x => x.toLowerCase().endsWith('.kml'));
+      if (!k) throw new Error('El KMZ no tiene un KML adentro.'); gj = kml(await zip.file(k).async('text'));
+    } else if (n.endsWith('.kml')) gj = kml(await f.text());
+    else if (n.endsWith('.zip')) gj = await shp(await f.arrayBuffer());
+    else gj = JSON.parse(await f.text());
+    const {polys, puntos} = poligonosDe(gj);
+    busy();
+    setModo(null);
+    if (polys.length) { quitarCentro(); setAOI(polys.length === 1 ? {type: 'Polygon', coordinates: polys[0]} : {type: 'MultiPolygon', coordinates: polys}, f.name + (polys.length > 1 ? ` (${polys.length} polígonos)` : '')); }
+    else if (puntos.length) setCentro(puntos[0][1], puntos[0][0], f.name);
+    else toast('No encontré polígonos ni puntos en el archivo.');
+  } catch (err) { busy(); console.error(err); toast('No pude leer el archivo: ' + err.message, 6000); }
+};
+
+// ---------- Búsqueda ----------
+const hoy = new Date(), hace = new Date(Date.now() - 60 * 864e5);
+const iso = d => new Date(d.getTime() - d.getTimezoneOffset() * 6e4).toISOString().slice(0, 10);
+$('#d1').value = iso(hace); $('#d2').value = iso(hoy);
+$('#nub').oninput = () => $('#nubTxt').textContent = $('#nub').value + '%';
+
+async function buscarEscenas() {
+  if (!S.aoi) { toast('Primero elegí un área.'); return []; }
+  const [w, s, e, n] = bboxDe(S.aoi);
+  const d1 = $('#d1').value, d2 = $('#d2').value;
+  if (!d1 || !d2 || d1 > d2) { toast('Revisá las fechas.'); return []; }
+  const body = {collections: [COLECCION], bbox: [w, s, e, n], datetime: `${d1}T00:00:00Z/${d2}T23:59:59Z`, limit: 250,
+    query: {'eo:cloud_cover': {lte: +$('#nub').value}}, sortby: [{field: 'properties.datetime', direction: 'desc'}]};
+  const r = await fetch(STAC, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)});
+  if (!r.ok) throw new Error('El catálogo respondió ' + r.status);
+  const j = await r.json();
+  const grupos = new Map();
+  for (const f of j.features) {
+    const k = f.properties.datetime.slice(0, 10) + '|' + f.properties.platform;
+    if (!grupos.has(k)) grupos.set(k, {fecha: f.properties.datetime, sat: f.properties.platform.replace('sentinel-', 'S').toUpperCase(), items: [], nubeEsc: []});
+    const g = grupos.get(k); g.items.push(f); g.nubeEsc.push(f.properties['eo:cloud_cover']);
+  }
+  return [...grupos.values()].sort((a, b) => b.fecha.localeCompare(a.fecha));
+}
+function pintarLista() {
+  const el = $('#lista'); el.innerHTML = '';
+  if (!S.grupos.length) { el.innerHTML = '<div class="muted">No hay escenas en esas fechas con esa nubosidad. Probá ampliar el rango o subir el máximo de nubes.</div>'; return; }
+  S.grupos.forEach((g, i) => {
+    const d = document.createElement('div'); d.className = 'esc' + (S.sel === g ? ' sel' : '');
+    const nubeArea = g.nubeArea == null ? '' : `<span class="tag ${g.nubeArea < 2 ? 'ok' : g.nubeArea < 20 ? 'med' : 'mal'}">${fmt(g.nubeArea, 0)}% nubes en el área</span>`;
+    d.innerHTML = `<div><b>${fechaLarga(g.fecha)}</b><small>${g.sat} · ${fmt(Math.min(...g.nubeEsc), 0)}% nubes en la escena</small></div>${nubeArea || '<span class="tag">Ver</span>'}`;
+    d.onclick = () => cargarGrupo(g);
+    el.appendChild(d);
+  });
+}
+$('#bBuscar').onclick = async () => {
+  busy('Buscando imágenes…');
+  try { S.grupos = await buscarEscenas(); busy(); pintarLista(); if (S.grupos.length) toast(`${S.grupos.length} fechas disponibles. Tocá una para verla.`); }
+  catch (e) { busy(); console.error(e); toast('Error buscando imágenes: ' + e.message, 6000); }
+};
+$('#bUltima').onclick = async () => {
+  try {
+    busy('Buscando imágenes…');
+    S.grupos = await buscarEscenas(); pintarLista();
+    const max = Math.min(S.grupos.length, 25);
+    for (let i = 0; i < max; i++) {
+      const g = S.grupos[i];
+      busy(`Revisando nubes ${fechaLarga(g.fecha)} (${i + 1}/${max})…`);
+      const r = await procesar(g, true);
+      g.nubeArea = r ? r.nubePct : 100; pintarLista();
+      if (r && r.cobertura > 0.95 && r.nubePct < 2) { await cargarGrupo(g); return; }
+    }
+    busy(); toast('No encontré una imagen sin nubes en esas fechas. Ampliá el rango.', 5000);
+  } catch (e) { busy(); console.error(e); toast('Error: ' + e.message, 6000); }
+};
+
+// ---------- Lectura de imágenes ----------
+const cacheTiff = new Map();
+const abrir = href => { if (!cacheTiff.has(href)) cacheTiff.set(href, GeoTIFF.fromUrl(href).catch(e => { cacheTiff.delete(href); throw e; })); return cacheTiff.get(href); };
+const httpsHref = h => h.startsWith('s3://') ? h.replace(/^s3:\/\/([^/]+)\//, 'https://$1.s3.us-west-2.amazonaws.com/') : h;
+function defUtm(epsg) { const z = epsg % 100, sur = Math.floor(epsg / 100) === 327; return `+proj=utm +zone=${z}${sur ? ' +south' : ''} +datum=WGS84 +units=m +no_defs`; }
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+async function leerVentana(href, caja, resObj) {
+  const tiff = await abrir(httpsHref(href));
+  const n = await tiff.getImageCount();
+  const im0 = await tiff.getImage(0);
+  const [ox, oy] = im0.getOrigin(), rx0 = im0.getResolution()[0], W0 = im0.getWidth();
+  let im = im0, rx = rx0;
+  for (let i = 1; i < n; i++) { const c = await tiff.getImage(i); const r = rx0 * W0 / c.getWidth(); if (r <= resObj * 1.01) { im = c; rx = r; } else break; }
+  const W = im.getWidth(), H = im.getHeight();
+  const x0 = clamp(Math.floor((caja[0] - ox) / rx) - 1, 0, W), x1 = clamp(Math.ceil((caja[2] - ox) / rx) + 1, 0, W);
+  const y0 = clamp(Math.floor((oy - caja[3]) / rx) - 1, 0, H), y1 = clamp(Math.ceil((oy - caja[1]) / rx) + 1, 0, H);
+  if (x1 <= x0 || y1 <= y0) return null;
+  const data = await im.readRasters({window: [x0, y0, x1, y1]});
+  return {data, w: x1 - x0, h: y1 - y0, gx: ox + x0 * rx, gy: oy - y0 * rx, res: rx};
+}
+function muestra(v, b, X, Y) {
+  if (!v) return 0;
+  const c = Math.floor((X - v.gx) / v.res), r = Math.floor((v.gy - Y) / v.res);
+  if (c < 0 || r < 0 || c >= v.w || r >= v.h) return 0;
+  return v.data[b][r * v.w + c];
+}
+function escalaDe(asset) { const rb = asset && asset['raster:bands'] && asset['raster:bands'][0]; return {s: rb && rb.scale != null ? rb.scale : 1e-4, o: rb && rb.offset != null ? rb.offset : -0.1}; }
+
+// Grilla de salida en Web Mercator + máscara del polígono por barrido
+function prepararGrilla(geom, soloNubes) {
+  const [w, s, e, n] = bboxDe(geom);
+  const X0 = mx(w), X1 = mx(e), Y0 = my(s), Y1 = my(n);
+  const k = Math.cos((s + n) / 2 * Math.PI / 180);
+  const gw = (X1 - X0) * k, gh = (Y1 - Y0) * k;
+  let res = Math.max(10, Math.max(gw, gh) / LADO_MAX_PX);
+  if (soloNubes) res = Math.max(20, Math.max(gw, gh) / 400);
+  const nx = Math.max(1, Math.ceil(gw / res)), ny = Math.max(1, Math.ceil(gh / res));
+  const dX = (X1 - X0) / nx, dY = (Y1 - Y0) / ny;
+  const anillosPx = [];
+  for (const poly of anillosDe(geom)) for (const ring of poly) anillosPx.push(ring.map(([lo, la]) => [(mx(lo) - X0) / dX, (Y1 - my(la)) / dY]));
+  const mask = new Uint8Array(nx * ny);
+  for (let r = 0; r < ny; r++) {
+    const yc = r + 0.5, xs = [];
+    for (const ring of anillosPx) for (let i = 0; i < ring.length - 1; i++) {
+      const [xa, ya] = ring[i], [xb, yb] = ring[i + 1];
+      if ((ya <= yc && yb > yc) || (yb <= yc && ya > yc)) xs.push(xa + (yc - ya) * (xb - xa) / (yb - ya));
+    }
+    xs.sort((a, b) => a - b);
+    for (let i = 0; i + 1 < xs.length; i += 2) { const c0 = Math.max(0, Math.ceil(xs[i] - 0.5)), c1 = Math.min(nx - 1, Math.floor(xs[i + 1] - 0.5)); for (let c = c0; c <= c1; c++) mask[r * nx + c] = 1; }
+  }
+  return {w, s, e, n, X0, X1, Y0, Y1, nx, ny, dX, dY, k, res, mask, anillosPx};
+}
+
+async function procesar(grupo, soloNubes = false) {
+  const G = prepararGrilla(S.aoi, soloNubes);
+  const N = G.nx * G.ny;
+  const lleno = new Uint8Array(N), scl = new Uint8Array(N);
+  const ndvi = soloNubes ? null : new Float32Array(N).fill(NaN);
+  const rgb = soloNubes ? null : new Uint8ClampedArray(N * 3);
+  for (const it of grupo.items) {
+    const epsg = it.properties['proj:epsg'] || +String(it.properties['proj:code'] || '').split(':')[1];
+    const fwd = proj4(defUtm(epsg)).forward;
+    // caja UTM del área (bordes densificados)
+    let cx0 = Infinity, cy0 = Infinity, cx1 = -Infinity, cy1 = -Infinity;
+    for (let i = 0; i <= 20; i++) for (const [lo, la] of [[G.w + (G.e - G.w) * i / 20, G.s], [G.w + (G.e - G.w) * i / 20, G.n], [G.w, G.s + (G.n - G.s) * i / 20], [G.e, G.s + (G.n - G.s) * i / 20]]) {
+      const [x, y] = fwd([lo, la]); cx0 = Math.min(cx0, x); cy0 = Math.min(cy0, y); cx1 = Math.max(cx1, x); cy1 = Math.max(cy1, y);
+    }
+    const caja = [cx0, cy0, cx1, cy1], A = it.assets;
+    const tareas = [leerVentana(A.scl.href, caja, G.res)];
+    if (!soloNubes) { tareas.push(leerVentana(A.red.href, caja, G.res), leerVentana(A.nir.href, caja, G.res)); tareas.push(A.visual ? leerVentana(A.visual.href, caja, G.res) : Promise.all([leerVentana(A.green.href, caja, G.res), leerVentana(A.blue.href, caja, G.res)])); }
+    const [vS, vR, vN, vV] = await Promise.all(tareas);
+    if (!vS) continue;
+    const eR = escalaDe(A.red), eN = escalaDe(A.nir), eG = escalaDe(A.green), eB = escalaDe(A.blue);
+    const paso = 32, ux = new Float64Array(G.nx), uy = new Float64Array(G.nx);
+    const nodos = []; for (let c = 0; c < G.nx - 1; c += paso) nodos.push(c); nodos.push(G.nx - 1);
+    for (let r = 0; r < G.ny; r++) {
+      let alguno = false; for (let c = 0; c < G.nx; c++) if (G.mask[r * G.nx + c] && !lleno[r * G.nx + c]) { alguno = true; break; }
+      if (!alguno) continue;
+      const la = ilat(G.Y1 - (r + 0.5) * G.dY);
+      // proyectar nodos cada "paso" píxeles e interpolar linealmente entre ellos
+      for (const c of nodos) { const p = fwd([ilon(G.X0 + (c + 0.5) * G.dX), la]); ux[c] = p[0]; uy[c] = p[1]; }
+      for (let j = 0; j + 1 < nodos.length; j++) {
+        const a = nodos[j], b = nodos[j + 1];
+        for (let q = a + 1; q < b; q++) { const t = (q - a) / (b - a); ux[q] = ux[a] + (ux[b] - ux[a]) * t; uy[q] = uy[a] + (uy[b] - uy[a]) * t; }
+      }
+      for (let c = 0; c < G.nx; c++) {
+        const i = r * G.nx + c; if (!G.mask[i] || lleno[i]) continue;
+        const X = ux[c], Y = uy[c];
+        const sc = muestra(vS, 0, X, Y); if (!sc) continue;
+        if (!soloNubes) {
+          const rr = muestra(vR, 0, X, Y), nn = muestra(vN, 0, X, Y); if (!rr || !nn) continue;
+          const red = rr * eR.s + eR.o, nir = nn * eN.s + eN.o;
+          ndvi[i] = (nir + red) !== 0 ? (nir - red) / (nir + red) : NaN;
+          if (Array.isArray(vV)) { // sin TCI: estirar reflectancias
+            const g = muestra(vV[0], 0, X, Y) * eG.s + eG.o, b = muestra(vV[1], 0, X, Y) * eB.s + eB.o;
+            const st = v => 255 * Math.pow(Math.max(0, Math.min(1, v / 0.18)), 0.9);
+            rgb[i * 3] = st(red); rgb[i * 3 + 1] = st(g); rgb[i * 3 + 2] = st(b);
+          } else { rgb[i * 3] = muestra(vV, 0, X, Y); rgb[i * 3 + 1] = muestra(vV, 1, X, Y); rgb[i * 3 + 2] = muestra(vV, 2, X, Y); }
+        }
+        scl[i] = sc; lleno[i] = 1;
+      }
+    }
+  }
+  // estadísticas
+  let tot = 0, cub = 0, nub = 0; const vals = [];
+  for (let i = 0; i < N; i++) {
+    if (!G.mask[i]) continue; tot++;
+    if (!lleno[i]) continue; cub++;
+    if (NUBE_SCL.has(scl[i])) { nub++; continue; }
+    if (ndvi && !isNaN(ndvi[i])) vals.push(ndvi[i]);
+  }
+  if (!cub) return null;
+  const out = {G, lleno, scl, ndvi, rgb, cobertura: cub / tot, nubePct: 100 * nub / cub};
+  if (ndvi && vals.length) {
+    vals.sort((a, b) => a - b);
+    const q = p => vals[Math.min(vals.length - 1, Math.floor(p * vals.length))];
+    out.media = vals.reduce((a, b) => a + b, 0) / vals.length; out.p10 = q(.1); out.p50 = q(.5); out.p90 = q(.9);
+    const cortes = [0.2, 0.4, 0.6, 0.8], cls = [0, 0, 0, 0, 0];
+    for (const v of vals) { let k = 0; while (k < 4 && v >= cortes[k]) k++; cls[k]++; }
+    out.clases = cls.map(c => c / vals.length);
+    const pxHa = (G.dX * G.k) * (G.dY * G.k) / 10000;
+    out.haValidas = vals.length * pxHa; out.haTot = tot * pxHa;
+  }
+  return out;
+}
+
+// ---------- Mostrar resultado ----------
+function lienzo(res, vista) {
+  const {G} = res, cv = document.createElement('canvas'); cv.width = G.nx; cv.height = G.ny;
+  const ctx = cv.getContext('2d'), img = ctx.createImageData(G.nx, G.ny), d = img.data;
+  for (let i = 0; i < G.nx * G.ny; i++) {
+    if (!G.mask[i] || !res.lleno[i]) continue;
+    let c;
+    if (vista === 'rgb') c = [res.rgb[i * 3], res.rgb[i * 3 + 1], res.rgb[i * 3 + 2]];
+    else c = NUBE_SCL.has(res.scl[i]) || isNaN(res.ndvi[i]) ? [150, 150, 150] : colorNdvi(res.ndvi[i]);
+    d[i * 4] = c[0]; d[i * 4 + 1] = c[1]; d[i * 4 + 2] = c[2]; d[i * 4 + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  return cv;
+}
+function limpiarResultado() {
+  if (S.overlay) { map.removeLayer(S.overlay); S.overlay = null; }
+  S.res = null; S.sel = null; S.jpg = {}; $('#secRes').hidden = true;
+}
+async function cargarGrupo(g) {
+  try {
+    busy(`Bajando la imagen del ${fechaLarga(g.fecha)}…`);
+    const r = await procesar(g, false);
+    busy();
+    if (!r) { toast('Esa imagen no cubre el área.'); return; }
+    S.res = r; S.sel = g; g.nubeArea = r.nubePct; S.jpg = {};
+    r.cv = {rgb: lienzo(r, 'rgb'), ndvi: lienzo(r, 'ndvi')};
+    pintarLista(); mostrar(); pintarStats();
+    $('#secRes').hidden = false; $('#resFecha').textContent = `· ${fechaLarga(g.fecha)} · ${g.sat}`;
+    if (r.cobertura < 0.98) toast(`Ojo: la imagen cubre el ${fmt(r.cobertura * 100, 0)}% del área.`, 5000);
+    else if (r.nubePct > 5) toast(`Hay ${fmt(r.nubePct, 0)}% de nubes o sombras en el área (en gris en el NDVI).`, 5000);
+    setTimeout(() => { prepararJpg('rgb'); prepararJpg('ndvi'); }, 50);
+    $('#secRes').scrollIntoView({behavior: 'smooth'});
+  } catch (e) { busy(); console.error(e); toast('Error bajando la imagen: ' + e.message, 6000); }
+}
+function mostrar() {
+  if (!S.res) return;
+  const {G} = S.res;
+  if (S.overlay) map.removeLayer(S.overlay);
+  S.overlay = L.imageOverlay(S.res.cv[S.vista].toDataURL('image/png'), [[G.s, G.w], [G.n, G.e]], {opacity: +$('#opac').value / 100, className: 'pix', interactive: false}).addTo(map);
+  if (S.aoiLayer) S.aoiLayer.bringToFront();
+  $('#leyenda').style.display = S.vista === 'ndvi' ? 'block' : 'none';
+  document.querySelectorAll('#seg button').forEach(b => b.classList.toggle('act', b.dataset.v === S.vista));
+}
+function pintarStats() {
+  const r = S.res; if (!r || r.media == null) { $('#stats').innerHTML = '<div class="muted">El área está cubierta de nubes en esta fecha.</div>'; return; }
+  const cols = ['#d73027', '#fdae61', '#fee08b', '#a6d96a', '#1a9850'];
+  $('#stats').innerHTML = `<div class="stats">
+      <div><small>NDVI promedio</small><b>${fmt(r.media)}</b></div>
+      <div><small>Mediana (P10 – P90)</small><b>${fmt(r.p50)}</b> <span class="muted">${fmt(r.p10)} – ${fmt(r.p90)}</span></div>
+      <div><small>Superficie analizada</small><b>${fmt0(r.haValidas)} ha</b></div>
+      <div><small>Nubes / sombras en el área</small><b>${fmt(r.nubePct, 0)}%</b></div></div>
+    <div class="muted">Distribución del NDVI: &lt;0,2 · 0,2–0,4 · 0,4–0,6 · 0,6–0,8 · &gt;0,8</div>
+    <div class="clases">${r.clases.map((c, i) => `<div title="${fmt(c * 100, 0)}%" style="width:${c * 100}%;background:${cols[i]}"></div>`).join('')}</div>
+    <div class="ejes">${r.clases.map(c => `<span>${fmt(c * 100, 0)}%</span>`).join('')}</div>`;
+}
+document.querySelectorAll('#seg button').forEach(b => b.onclick = () => { S.vista = b.dataset.v; mostrar(); });
+$('#opac').oninput = () => { if (S.overlay) S.overlay.setOpacity(+$('#opac').value / 100); };
+
+map.on('click', e => {
+  if (map.pm.globalDrawModeEnabled()) return;
+  if (S.modo === 'punto') { setModo(null); setCentro(e.latlng.lat, e.latlng.lng, 'Punto'); return; }
+  const r = S.res; if (!r) return;
+  const {G} = r, c = Math.floor((mx(e.latlng.lng) - G.X0) / G.dX), f = Math.floor((G.Y1 - my(e.latlng.lat)) / G.dY);
+  if (c < 0 || f < 0 || c >= G.nx || f >= G.ny) return;
+  const i = f * G.nx + c; if (!G.mask[i] || !r.lleno[i]) return;
+  const txt = NUBE_SCL.has(r.scl[i]) ? 'Nube o sombra' : `NDVI <b>${fmt(r.ndvi[i])}</b>`;
+  L.popup({closeButton: false, autoClose: true}).setLatLng(e.latlng).setContent(`${txt}<br><span style="color:#888">${e.latlng.lat.toFixed(5)}, ${e.latlng.lng.toFixed(5)}</span>`).openOn(map);
+});
+
+// ---------- Exportar JPG ----------
+function componerJpg(vista) {
+  const r = S.res, {G} = r, src = r.cv[vista];
+  const lado = Math.max(G.nx, G.ny), esc = 1100 / lado;
+  const iw = Math.round(G.nx * esc), ih = Math.round(G.ny * esc);
+  const pad = 30, cab = 78, pie = vista === 'ndvi' ? 150 : 96;
+  const W = Math.max(iw + pad * 2, 700), H = ih + cab + pie;
+  const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+  const x = cv.getContext('2d');
+  x.fillStyle = '#fff'; x.fillRect(0, 0, W, H);
+  const ox = Math.round((W - iw) / 2), oy = cab;
+  x.imageSmoothingEnabled = esc < 1; x.drawImage(src, ox, oy, iw, ih);
+  // contorno
+  x.strokeStyle = '#111'; x.lineWidth = 2;
+  for (const ring of G.anillosPx) { x.beginPath(); ring.forEach(([px, py], k) => { const X = ox + px * esc, Y = oy + py * esc; k ? x.lineTo(X, Y) : x.moveTo(X, Y); }); x.closePath(); x.stroke(); }
+  // títulos
+  x.fillStyle = '#111'; x.textAlign = 'center';
+  x.font = 'bold 30px -apple-system, Segoe UI, Roboto, sans-serif';
+  x.fillText(vista === 'ndvi' ? 'NDVI' : 'Color real', W / 2, 38);
+  x.font = '18px -apple-system, Segoe UI, Roboto, sans-serif'; x.fillStyle = '#444';
+  x.fillText(`${fechaLarga(S.sel.fecha)} · ${S.sel.sat} · ${$('#aoiInfo').textContent}`, W / 2, 64);
+  // escala
+  const mPorPx = G.dX * G.k / esc, objetivo = mPorPx * iw / 4;
+  const nice = [50, 100, 200, 250, 500, 1000, 2000, 2500, 5000, 10000, 20000, 50000].reduce((a, b) => Math.abs(b - objetivo) < Math.abs(a - objetivo) ? b : a);
+  const lpx = nice / mPorPx, sy = oy + ih + 26;
+  x.fillStyle = '#111'; x.fillRect(ox, sy, lpx, 6);
+  x.font = '15px -apple-system, Segoe UI, Roboto, sans-serif'; x.textAlign = 'center';
+  x.fillText(nice >= 1000 ? `${nice / 1000} km` : `${nice} m`, ox + lpx / 2, sy - 6);
+  // norte
+  const nx0 = ox + iw - 20, ny0 = oy + 16;
+  x.beginPath(); x.moveTo(nx0, ny0); x.lineTo(nx0 - 9, ny0 + 22); x.lineTo(nx0 + 9, ny0 + 22); x.closePath();
+  x.fillStyle = '#fff'; x.strokeStyle = '#111'; x.lineWidth = 2; x.fill(); x.stroke();
+  x.fillStyle = '#111'; x.font = 'bold 15px -apple-system, Segoe UI, Roboto, sans-serif'; x.fillText('N', nx0, ny0 + 40);
+  let y = sy + 30;
+  if (vista === 'ndvi') {
+    const bw = Math.min(520, W - 2 * pad), bx = (W - bw) / 2, gr = x.createLinearGradient(bx, 0, bx + bw, 0);
+    PALETA.forEach((c, i) => gr.addColorStop(i / (PALETA.length - 1), c));
+    x.fillStyle = gr; x.fillRect(bx, y, bw, 16); x.strokeStyle = '#333'; x.lineWidth = 1; x.strokeRect(bx, y, bw, 16);
+    x.fillStyle = '#333'; x.font = '14px -apple-system, Segoe UI, Roboto, sans-serif';
+    [0, .3, .6, .9].forEach(v => x.fillText(fmt(v, 1), bx + bw * (v - NDVI_MIN) / (NDVI_MAX - NDVI_MIN), y + 34));
+    x.fillStyle = '#999'; x.fillRect(bx + bw + 14, y, 16, 16); x.fillStyle = '#333'; x.textAlign = 'left'; x.fillText('nubes', bx + bw + 34, y + 13);
+    x.textAlign = 'center';
+    y += 56;
+    if (r.media != null) { x.font = '16px -apple-system, Segoe UI, Roboto, sans-serif'; x.fillText(`NDVI promedio ${fmt(r.media)} · mediana ${fmt(r.p50)} · nubes ${fmt(r.nubePct, 0)}%`, W / 2, y); y += 24; }
+  }
+  x.font = '13px -apple-system, Segoe UI, Roboto, sans-serif'; x.fillStyle = '#777';
+  x.fillText('Contiene datos modificados de Copernicus Sentinel ' + S.sel.fecha.slice(0, 4) + ' · Sentinel-2 L2A, 10 m', W / 2, Math.min(H - 12, y + 10));
+  return new Promise(res => cv.toBlob(b => res(new File([b], `${vista === 'ndvi' ? 'NDVI' : 'RGB'}_${S.sel.fecha.slice(0, 10)}.jpg`, {type: 'image/jpeg'})), 'image/jpeg', 0.92));
+}
+function prepararJpg(v) { if (S.res && !S.jpg[v]) S.jpg[v] = componerJpg(v); return S.jpg[v]; }
+$('#bJpg').onclick = async () => {
+  if (!S.res) return;
+  const f = await prepararJpg(S.vista);
+  try {
+    if (navigator.canShare && navigator.canShare({files: [f]})) { await navigator.share({files: [f], title: f.name}); return; }
+  } catch (e) { if (e.name === 'AbortError') return; }
+  const url = URL.createObjectURL(f);
+  if (/iPhone|iPad|iPod/.test(navigator.userAgent)) { $('#modalImg').src = url; $('#modal').style.display = 'flex'; return; }
+  const a = document.createElement('a'); a.href = url; a.download = f.name; document.body.appendChild(a); a.click(); a.remove();
+};
+$('#bCerrar').onclick = () => $('#modal').style.display = 'none';
+
+// ---------- Panel ----------
+function minimizar(m) { $('#sheet').classList.toggle('min', m); $('#grabTxt').textContent = m ? 'Mostrar panel' : 'Ocultar panel'; }
+$('#grab').onclick = () => minimizar(!$('#sheet').classList.contains('min'));
+
+// Ícono para «Agregar a inicio» (se dibuja acá para no depender de archivos aparte)
+(function () {
+  const c = document.createElement('canvas'); c.width = c.height = 180; const x = c.getContext('2d');
+  x.fillStyle = '#1f3d2b'; x.fillRect(0, 0, 180, 180);
+  const celdas = [[0, 0, .55, .45, '#1a9850'], [.55, 0, 1, .45, '#a6d96a'], [0, .45, .35, 1, '#fdae61'], [.35, .45, .75, 1, '#66bd63'], [.75, .45, 1, 1, '#f46d43']];
+  for (const [a, b, cc, d, col] of celdas) { x.fillStyle = col; x.fillRect(40 + a * 100 + 2, 40 + b * 100 + 2, (cc - a) * 100 - 4, (d - b) * 100 - 4); }
+  x.strokeStyle = '#fff'; x.lineWidth = 5; x.strokeRect(32, 32, 116, 116);
+  try { document.getElementById('icono').href = c.toDataURL('image/png'); } catch (e) {}
+})();
+
+// Restaurar última área
+const prev = store.get('aoi');
+if (prev && prev.geom) { try { setAOI(prev.geom, prev.etiqueta); } catch (e) {} }
+</script>
+</body>
+</html>
