@@ -178,11 +178,6 @@
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/@geoman-io/leaflet-geoman-free@2.17.0/dist/leaflet-geoman.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/geotiff@2.1.3/dist-browser/geotiff.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.11.0/proj4.js"></script>
-<script src="https://unpkg.com/@tmcw/togeojson@5.8.1/dist/togeojson.umd.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-<script src="https://unpkg.com/shpjs@4.0.4/dist/shp.min.js"></script>
 <script>
 'use strict';
 // ---------- Configuración ----------
@@ -357,6 +352,7 @@ $('#file').onchange = async e => {
   busy('Leyendo el archivo…');
   try {
     const n = f.name.toLowerCase(); let gj;
+    await cargarArchivoLibs(n);
     const kml = txt => toGeoJSON.kml(new DOMParser().parseFromString(txt, 'text/xml'));
     if (n.endsWith('.kmz')) {
       const zip = await JSZip.loadAsync(f); const k = Object.keys(zip.files).find(x => x.toLowerCase().endsWith('.kml'));
@@ -417,13 +413,16 @@ $('#bUltima').onclick = async () => {
   try {
     busy('Buscando imágenes…');
     S.grupos = await buscarEscenas(); pintarLista();
-    const max = Math.min(S.grupos.length, 25);
-    for (let i = 0; i < max; i++) {
-      const g = S.grupos[i];
-      busy(`Revisando nubes ${fechaLarga(g.fecha)} (${i + 1}/${max})…`);
-      const r = await procesar(g, true);
-      g.nubeArea = r ? r.nubePct : 100; pintarLista();
-      if (r && r.cobertura > 0.95 && r.nubePct < 2) { await cargarGrupo(g); return; }
+    // se saltean las fechas casi totalmente nubladas; la más reciente se revisa sola (suele ser la buena) y después de a 4 en paralelo
+    const cand = S.grupos.filter(g => Math.min(...g.nubeEsc) < 95).slice(0, 32);
+    for (let i = 0; i < cand.length; ) {
+      const lote = cand.slice(i, i + (i === 0 ? 1 : 4)); i += lote.length;
+      busy(`Revisando nubes del ${fechaLarga(lote[lote.length - 1].fecha)} al ${fechaLarga(lote[0].fecha)} (${i}/${cand.length})…`);
+      const rs = await Promise.all(lote.map(g => procesar(g, true).catch(e => { console.warn(e); return null; })));
+      lote.forEach((g, j) => { const r = rs[j]; g.nubeArea = r ? r.nubePct : 100; g.cob = r ? r.cobertura : 0; });
+      pintarLista();
+      const limpia = lote.find(g => g.cob > 0.95 && g.nubeArea < 2);
+      if (limpia) { await cargarGrupo(limpia); return; }
     }
     busy(); toast('No encontré una imagen sin nubes en esas fechas. Ampliá el rango.', 5000);
   } catch (e) { busy(); console.error(e); toast('Error: ' + e.message, 6000); }
@@ -483,83 +482,245 @@ function prepararGrilla(geom, soloNubes) {
   return {w, s, e, n, X0, X1, Y0, Y1, nx, ny, dX, dY, k, res, mask, anillosPx};
 }
 
-async function procesar(grupo, soloNubes = false) {
-  const G = prepararGrilla(S.aoi, soloNubes);
-  const N = G.nx * G.ny;
-  const lleno = new Uint8Array(N), scl = new Uint8Array(N), fuente = new Uint8Array(N);
-  const PX = soloNubes ? null : new Float32Array(N), PY = soloNubes ? null : new Float32Array(N);
-  const b = soloNubes ? null : {red: new Float32Array(N).fill(NaN), nir: new Float32Array(N).fill(NaN)};
-  const rgb = soloNubes ? null : new Uint8ClampedArray(N * 3);
-  const items = [];
-  for (let k = 0; k < grupo.items.length; k++) {
-    const it = grupo.items[k];
-    const epsg = it.properties['proj:epsg'] || +String(it.properties['proj:code'] || '').split(':')[1];
-    const fwd = proj4(defUtm(epsg)).forward;
-    // caja UTM del área (bordes densificados)
+// ---------- Procesamiento en segundo plano (Web Worker) ----------
+// Todo lo pesado (bajar recortes de las imágenes y reproyectar) corre aparte para que la pantalla no se trabe.
+function codigoWorker() {
+  importScripts('https://cdn.jsdelivr.net/npm/geotiff@2.1.3/dist-browser/geotiff.js', 'https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.11.0/proj4.js');
+  const R = 6378137, NUBE = new Set([3, 8, 9, 10]);
+  const ilon = x => x / R * 180 / Math.PI;
+  const ilat = y => (2 * Math.atan(Math.exp(y / R)) - Math.PI / 2) * 180 / Math.PI;
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const httpsHref = h => h.startsWith('s3://') ? h.replace(/^s3:\/\/([^/]+)\//, 'https://$1.s3.us-west-2.amazonaws.com/') : h;
+  const defUtm = epsg => { const z = epsg % 100, sur = Math.floor(epsg / 100) === 327; return '+proj=utm +zone=' + z + (sur ? ' +south' : '') + ' +datum=WGS84 +units=m +no_defs'; };
+  const escalaDe = a => ({s: a && a.rb && a.rb.scale != null ? a.rb.scale : 1e-4, o: a && a.rb && a.rb.offset != null ? a.rb.offset : -0.1});
+  const tiffs = new Map(), memo = new Map();
+  function abrir(href) {
+    href = httpsHref(href);
+    if (!tiffs.has(href)) {
+      tiffs.set(href, GeoTIFF.fromUrl(href).catch(e => { tiffs.delete(href); throw e; }));
+      if (tiffs.size > 80) tiffs.delete(tiffs.keys().next().value);
+    }
+    return tiffs.get(href);
+  }
+  async function leerVentana(href, caja, resObj) {
+    const tiff = await abrir(href);
+    const n = await tiff.getImageCount();
+    const im0 = await tiff.getImage(0);
+    const [ox, oy] = im0.getOrigin(), rx0 = im0.getResolution()[0], W0 = im0.getWidth();
+    let im = im0, rx = rx0;
+    for (let i = 1; i < n; i++) { const c = await tiff.getImage(i); const r = rx0 * W0 / c.getWidth(); if (r <= resObj * 1.01) { im = c; rx = r; } else break; }
+    const W = im.getWidth(), H = im.getHeight();
+    const x0 = clamp(Math.floor((caja[0] - ox) / rx) - 1, 0, W), x1 = clamp(Math.ceil((caja[2] - ox) / rx) + 1, 0, W);
+    const y0 = clamp(Math.floor((oy - caja[3]) / rx) - 1, 0, H), y1 = clamp(Math.ceil((oy - caja[1]) / rx) + 1, 0, H);
+    if (x1 <= x0 || y1 <= y0) return null;
+    const data = await im.readRasters({window: [x0, y0, x1, y1]});
+    return {data, w: x1 - x0, h: y1 - y0, gx: ox + x0 * rx, gy: oy - y0 * rx, res: rx};
+  }
+  function muestra(v, b, X, Y) {
+    if (!v) return 0;
+    const c = Math.floor((X - v.gx) / v.res), r = Math.floor((v.gy - Y) / v.res);
+    if (c < 0 || r < 0 || c >= v.w || r >= v.h) return 0;
+    return v.data[b][r * v.w + c];
+  }
+  function cajaDe(G, it) {
+    const fwd = proj4(defUtm(it.epsg)).forward;
     let cx0 = Infinity, cy0 = Infinity, cx1 = -Infinity, cy1 = -Infinity;
     for (let i = 0; i <= 20; i++) for (const [lo, la] of [[G.w + (G.e - G.w) * i / 20, G.s], [G.w + (G.e - G.w) * i / 20, G.n], [G.w, G.s + (G.n - G.s) * i / 20], [G.e, G.s + (G.n - G.s) * i / 20]]) {
       const [x, y] = fwd([lo, la]); cx0 = Math.min(cx0, x); cy0 = Math.min(cy0, y); cx1 = Math.max(cx1, x); cy1 = Math.max(cy1, y);
     }
-    const caja = [cx0, cy0, cx1, cy1], A = it.assets;
-    items.push({it, caja});
-    const tareas = [leerVentana(A.scl.href, caja, G.res)];
-    if (!soloNubes) tareas.push(leerVentana(A.red.href, caja, G.res), leerVentana(A.nir.href, caja, G.res), A.visual ? leerVentana(A.visual.href, caja, G.res) : Promise.resolve(null));
-    const [vS, vR, vN, vV] = await Promise.all(tareas);
-    if (!vS) continue;
-    const eR = escalaDe(A.red), eN = escalaDe(A.nir);
-    const paso = 32, ux = new Float64Array(G.nx), uy = new Float64Array(G.nx);
-    const nodos = []; for (let c = 0; c < G.nx - 1; c += paso) nodos.push(c); nodos.push(G.nx - 1);
-    for (let r = 0; r < G.ny; r++) {
-      let alguno = false; for (let c = 0; c < G.nx; c++) if (G.mask[r * G.nx + c] && !lleno[r * G.nx + c]) { alguno = true; break; }
-      if (!alguno) continue;
-      const la = ilat(G.Y1 - (r + 0.5) * G.dY);
-      // proyectar nodos cada "paso" píxeles e interpolar linealmente entre ellos
-      for (const c of nodos) { const p = fwd([ilon(G.X0 + (c + 0.5) * G.dX), la]); ux[c] = p[0]; uy[c] = p[1]; }
-      for (let j = 0; j + 1 < nodos.length; j++) {
-        const a = nodos[j], z = nodos[j + 1];
-        for (let q = a + 1; q < z; q++) { const t = (q - a) / (z - a); ux[q] = ux[a] + (ux[z] - ux[a]) * t; uy[q] = uy[a] + (uy[z] - uy[a]) * t; }
-      }
-      for (let c = 0; c < G.nx; c++) {
-        const i = r * G.nx + c; if (!G.mask[i] || lleno[i]) continue;
-        const X = ux[c], Y = uy[c];
-        const sc = muestra(vS, 0, X, Y); if (!sc) continue;
-        if (!soloNubes) {
-          const rr = muestra(vR, 0, X, Y), nn = muestra(vN, 0, X, Y); if (!rr || !nn) continue;
-          b.red[i] = rr * eR.s + eR.o; b.nir[i] = nn * eN.s + eN.o;
-          if (vV) { rgb[i * 3] = muestra(vV, 0, X, Y); rgb[i * 3 + 1] = muestra(vV, 1, X, Y); rgb[i * 3 + 2] = muestra(vV, 2, X, Y); }
-          PX[i] = X; PY[i] = Y;
+    return [cx0, cy0, cx1, cy1];
+  }
+  function guardarMemo(id, st) { memo.set(id, st); while (memo.size > 6) memo.delete(memo.keys().next().value); }
+  async function procesar(m) {
+    const {G, items, soloNubes} = m, N = G.nx * G.ny, mask = G.mask;
+    const lleno = new Uint8Array(N), scl = new Uint8Array(N), fuente = new Uint8Array(N);
+    const PX = soloNubes ? null : new Float32Array(N), PY = soloNubes ? null : new Float32Array(N);
+    const red = soloNubes ? null : new Float32Array(N).fill(NaN), nir = soloNubes ? null : new Float32Array(N).fill(NaN);
+    const rgb = soloNubes ? null : new Uint8ClampedArray(N * 3);
+    const cajas = [];
+    for (let k = 0; k < items.length; k++) {
+      const it = items[k], A = it.assets, fwd = proj4(defUtm(it.epsg)).forward, caja = cajaDe(G, it);
+      cajas.push(caja);
+      const tareas = [leerVentana(A.scl.href, caja, G.res)];
+      if (!soloNubes) tareas.push(leerVentana(A.red.href, caja, G.res), leerVentana(A.nir.href, caja, G.res), A.visual ? leerVentana(A.visual.href, caja, G.res) : null);
+      const [vS, vR, vN, vV] = await Promise.all(tareas);
+      if (!vS) continue;
+      const eR = escalaDe(A.red), eN = escalaDe(A.nir);
+      const paso = 32, ux = new Float64Array(G.nx), uy = new Float64Array(G.nx);
+      const nodos = []; for (let c = 0; c < G.nx - 1; c += paso) nodos.push(c); nodos.push(G.nx - 1);
+      for (let r = 0; r < G.ny; r++) {
+        let alguno = false; for (let c = 0; c < G.nx; c++) if (mask[r * G.nx + c] && !lleno[r * G.nx + c]) { alguno = true; break; }
+        if (!alguno) continue;
+        const la = ilat(G.Y1 - (r + 0.5) * G.dY);
+        for (const c of nodos) { const p = fwd([ilon(G.X0 + (c + 0.5) * G.dX), la]); ux[c] = p[0]; uy[c] = p[1]; }
+        for (let j = 0; j + 1 < nodos.length; j++) {
+          const a = nodos[j], z = nodos[j + 1];
+          for (let q = a + 1; q < z; q++) { const t = (q - a) / (z - a); ux[q] = ux[a] + (ux[z] - ux[a]) * t; uy[q] = uy[a] + (uy[z] - uy[a]) * t; }
         }
-        scl[i] = sc; lleno[i] = 1; fuente[i] = k + 1;
+        for (let c = 0; c < G.nx; c++) {
+          const i = r * G.nx + c; if (!mask[i] || lleno[i]) continue;
+          const X = ux[c], Y = uy[c];
+          const sc = muestra(vS, 0, X, Y); if (!sc) continue;
+          if (!soloNubes) {
+            const rr = muestra(vR, 0, X, Y), nn = muestra(vN, 0, X, Y); if (!rr || !nn) continue;
+            red[i] = rr * eR.s + eR.o; nir[i] = nn * eN.s + eN.o;
+            if (vV) { rgb[i * 3] = muestra(vV, 0, X, Y); rgb[i * 3 + 1] = muestra(vV, 1, X, Y); rgb[i * 3 + 2] = muestra(vV, 2, X, Y); }
+            PX[i] = X; PY[i] = Y;
+          }
+          scl[i] = sc; lleno[i] = 1; fuente[i] = k + 1;
+        }
       }
     }
+    let tot = 0, cub = 0, nub = 0;
+    for (let i = 0; i < N; i++) { if (!mask[i]) continue; tot++; if (!lleno[i]) continue; cub++; if (NUBE.has(scl[i])) nub++; }
+    if (!cub) return {out: null};
+    const res = {cobertura: cub / tot, nubePct: 100 * nub / cub};
+    if (soloNubes) return {out: res};
+    guardarMemo(m.id, {G, items, cajas, fuente, PX, PY});
+    Object.assign(res, {lleno, scl, fuente, PX, PY, b: {red, nir}, rgb});
+    return {out: res, transfer: [lleno.buffer, scl.buffer, red.buffer, nir.buffer, rgb.buffer]};
   }
-  let tot = 0, cub = 0, nub = 0;
-  for (let i = 0; i < N; i++) { if (!G.mask[i]) continue; tot++; if (!lleno[i]) continue; cub++; if (NUBE_SCL.has(scl[i])) nub++; }
-  if (!cub) return null;
-  const res = {G, N, grupo, items, lleno, scl, fuente, PX, PY, b, rgb, cobertura: cub / tot, nubePct: 100 * nub / cub, est: {}, val: {}, cv: {}};
-  if (!soloNubes && grupo.items.some(x => !x.assets.visual)) {
-    await asegurarBandas(res, ['green', 'blue']);
-    const st = v => 255 * Math.pow(Math.max(0, Math.min(1, v / 0.18)), 0.9);
-    for (let i = 0; i < N; i++) if (lleno[i] && !rgb[i * 3] && !rgb[i * 3 + 1] && !rgb[i * 3 + 2]) { rgb[i * 3] = st(b.red[i]); rgb[i * 3 + 1] = st(b.green[i]); rgb[i * 3 + 2] = st(b.blue[i]); }
+  async function bandas(m) {
+    const st = memo.get(m.id); if (!st) throw new Error('sin-memo');
+    const {G, items, cajas, fuente, PX, PY} = st, N = G.nx * G.ny, out = {};
+    for (const n of m.nombres) out[n] = new Float32Array(N).fill(NaN);
+    for (let k = 0; k < items.length; k++) {
+      const it = items[k];
+      const vs = await Promise.all(m.nombres.map(n => it.assets[n] ? leerVentana(it.assets[n].href, cajas[k], G.res) : null));
+      m.nombres.forEach((n, j) => {
+        const v = vs[j]; if (!v) return;
+        const e = escalaDe(it.assets[n]), arr = out[n];
+        for (let i = 0; i < N; i++) { if (fuente[i] !== k + 1) continue; const val = muestra(v, 0, PX[i], PY[i]); if (val) arr[i] = val * e.s + e.o; }
+      });
+    }
+    return {out, transfer: Object.values(out).map(a => a.buffer)};
   }
-  return res;
+  self.onmessage = async e => {
+    const m = e.data;
+    try {
+      let r;
+      if (m.tipo === 'procesar') r = await procesar(m);
+      else if (m.tipo === 'bandas') r = await bandas(m);
+      else if (m.tipo === 'registrar') { guardarMemo(m.id, {G: m.G, items: m.items, cajas: m.items.map(it => cajaDe(m.G, it)), fuente: m.fuente, PX: m.PX, PY: m.PY}); r = {out: true}; }
+      self.postMessage({id: m.rid, ok: true, out: r.out}, r.transfer || []);
+    } catch (err) { self.postMessage({id: m.rid, ok: false, error: String((err && err.message) || err)}); }
+  };
+}
+
+let worker = null, ridSeq = 0, resSeq = 0;
+const pendientes = new Map();
+function crearWorker() {
+  worker = new Worker(URL.createObjectURL(new Blob(['(' + codigoWorker.toString() + ')()'], {type: 'text/javascript'})));
+  worker.onmessage = e => { const {id, ok, out, error} = e.data, p = pendientes.get(id); if (!p) return; pendientes.delete(id); ok ? p.res(out) : p.rej(new Error(error)); };
+  worker.onerror = e => {
+    console.error('worker', e.message);
+    const err = new Error('Falló el procesamiento en segundo plano (' + (e.message || 'sin detalle') + '). Revisá la conexión.');
+    for (const p of pendientes.values()) p.rej(err);
+    pendientes.clear(); try { worker.terminate(); } catch (x) {} worker = null;
+  };
+}
+function pedir(msg) {
+  if (!worker) crearWorker();
+  return new Promise((res, rej) => { const rid = ++ridSeq; pendientes.set(rid, {res, rej}); worker.postMessage(Object.assign({rid}, msg)); });
+}
+
+// ---------- Memoria de lo ya bajado (en el teléfono) ----------
+let dbP = null;
+function abrirDB() {
+  if (!dbP) dbP = new Promise((res, rej) => {
+    const q = indexedDB.open('visor-satelital', 1);
+    q.onupgradeneeded = () => { q.result.createObjectStore('res'); q.result.createObjectStore('nubes'); };
+    q.onsuccess = () => res(q.result); q.onerror = () => rej(q.error);
+  }).catch(e => { dbP = null; throw e; });
+  return dbP;
+}
+async function dbOp(st, modo, fn) {
+  try {
+    const db = await abrirDB();
+    return await new Promise((res, rej) => { const tx = db.transaction(st, modo), q = fn(tx.objectStore(st)); tx.oncomplete = () => res(q && q.result); tx.onerror = () => rej(tx.error); tx.onabort = () => rej(tx.error); });
+  } catch (e) { console.warn('memoria', e); return undefined; }
+}
+const dbGet = (st, k) => dbOp(st, 'readonly', os => os.get(k));
+const dbPut = (st, k, v) => dbOp(st, 'readwrite', os => os.put(v, k));
+const dbDel = (st, k) => dbOp(st, 'readwrite', os => os.delete(k));
+function hashStr(s) { let h = 2166136261; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); } return (h >>> 0).toString(36); }
+const claveAoi = () => hashStr(JSON.stringify(S.aoi));
+const claveGrupo = g => g.fecha.slice(0, 19) + '|' + g.sat;
+const memoria = new Map();
+function recordar(key, r) { memoria.delete(key); memoria.set(key, r); while (memoria.size > 4) memoria.delete(memoria.keys().next().value); }
+const MAX_PX_MEMORIA = 1200000;
+async function guardarRes(r) {
+  if (r.N > MAX_PX_MEMORIA) return;
+  await dbPut('res', r.key, {N: r.N, lleno: r.lleno, scl: r.scl, fuente: r.fuente, PX: r.PX, PY: r.PY, b: r.b, rgb: r.rgb, cobertura: r.cobertura, nubePct: r.nubePct});
+  const lista = (store.get('memoriaRes') || []).filter(k => k !== r.key); lista.push(r.key);
+  while (lista.length > 15) dbDel('res', lista.shift());
+  store.set('memoriaRes', lista);
+}
+const BANDAS_W = new Set(['scl', 'red', 'green', 'blue', 'nir', 'nir08', 'rededge1', 'swir16', 'visual']);
+function itemsWorker(grupo) {
+  return grupo.items.map(it => ({
+    epsg: it.properties['proj:epsg'] || +String(it.properties['proj:code'] || '').split(':')[1],
+    assets: Object.fromEntries(Object.entries(it.assets).filter(([k]) => BANDAS_W.has(k)).map(([k, a]) => [k, {href: a.href, rb: (a['raster:bands'] || [])[0] || null}]))
+  }));
+}
+const gw = G => ({nx: G.nx, ny: G.ny, X0: G.X0, Y1: G.Y1, dX: G.dX, dY: G.dY, w: G.w, s: G.s, e: G.e, n: G.n, res: G.res, mask: G.mask});
+
+async function procesar(grupo, soloNubes = false) {
+  const key = claveAoi() + '|' + claveGrupo(grupo);
+  const enMemoria = memoria.get(key); if (enMemoria) return enMemoria;
+  if (soloNubes) { const c = await dbGet('nubes', key); if (c) return c; }
+  const G = prepararGrilla(S.aoi, soloNubes), N = G.nx * G.ny, items = itemsWorker(grupo);
+  if (!soloNubes) {
+    const c = await dbGet('res', key);
+    if (c && c.N === N) { const r = Object.assign({G, grupo, items, key, id: ++resSeq, est: {}, val: {}, cv: {}}, c); recordar(key, r); return r; }
+  }
+  const id = ++resSeq;
+  const out = await pedir({tipo: 'procesar', id, G: gw(G), items, soloNubes});
+  if (!out) return null;
+  if (soloNubes) { dbPut('nubes', key, out); return out; }
+  const r = Object.assign({G, N, grupo, items, key, id, est: {}, val: {}, cv: {}}, out);
+  if (!grupo.items.every(x => x.assets.visual)) {
+    await asegurarBandas(r, ['green', 'blue']);
+    const st = v => 255 * Math.pow(Math.max(0, Math.min(1, v / 0.18)), 0.9), rgb = r.rgb, b = r.b;
+    for (let i = 0; i < N; i++) if (r.lleno[i] && !rgb[i * 3] && !rgb[i * 3 + 1] && !rgb[i * 3 + 2]) { rgb[i * 3] = st(b.red[i]); rgb[i * 3 + 1] = st(b.green[i]); rgb[i * 3 + 2] = st(b.blue[i]); }
+  }
+  recordar(key, r); guardarRes(r);
+  dbPut('nubes', key, {cobertura: r.cobertura, nubePct: r.nubePct});
+  return r;
 }
 
 // Baja bandas extra (borde rojo, infrarrojo medio, verde…) solo cuando hacen falta
 async function asegurarBandas(r, nombres) {
   const faltan = [...new Set(nombres)].filter(n => !r.b[n]);
   if (!faltan.length) return;
-  for (const n of faltan) r.b[n] = new Float32Array(r.N).fill(NaN);
-  for (let k = 0; k < r.items.length; k++) {
-    const {it, caja} = r.items[k];
-    const vs = await Promise.all(faltan.map(n => it.assets[n] ? leerVentana(it.assets[n].href, caja, r.G.res) : Promise.resolve(null)));
-    faltan.forEach((n, j) => {
-      const v = vs[j]; if (!v) return;
-      const e = escalaDe(it.assets[n]), arr = r.b[n];
-      for (let i = 0; i < r.N; i++) { if (r.fuente[i] !== k + 1) continue; const val = muestra(v, 0, r.PX[i], r.PY[i]); if (val) arr[i] = val * e.s + e.o; }
-    });
+  let out;
+  try { out = await pedir({tipo: 'bandas', id: r.id, nombres: faltan}); }
+  catch (e) {
+    if (!/sin-memo/.test(e.message)) throw e;
+    await pedir({tipo: 'registrar', id: r.id, G: gw(r.G), items: r.items, fuente: r.fuente, PX: r.PX, PY: r.PY});
+    out = await pedir({tipo: 'bandas', id: r.id, nombres: faltan});
   }
+  Object.assign(r.b, out);
+  guardarRes(r);
 }
+
+// ---------- Librerías que se cargan solo cuando hacen falta ----------
+const LIBS_ARCHIVO = {kml: 'https://unpkg.com/@tmcw/togeojson@5.8.1/dist/togeojson.umd.js', zip: 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js', shp: 'https://unpkg.com/shpjs@4.0.4/dist/shp.min.js'};
+const scriptsCargados = {};
+function cargarScript(url) {
+  return scriptsCargados[url] || (scriptsCargados[url] = new Promise((res, rej) => {
+    const s = document.createElement('script'); s.src = url; s.onload = res;
+    s.onerror = () => { delete scriptsCargados[url]; rej(new Error('no se pudo cargar el lector de archivos (revisá la conexión)')); };
+    document.head.appendChild(s);
+  }));
+}
+async function cargarArchivoLibs(n) {
+  if (n.endsWith('.kml') || n.endsWith('.kmz')) await cargarScript(LIBS_ARCHIVO.kml);
+  if (n.endsWith('.kmz')) await cargarScript(LIBS_ARCHIVO.zip);
+  if (n.endsWith('.zip')) await cargarScript(LIBS_ARCHIVO.shp);
+}
+// Guardar la app en el teléfono para que abra al instante
+if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(e => console.warn('sw', e));
 
 // ---------- Vistas e índices ----------
 const PAL_HUM = ['#8c510a', '#bf812d', '#dfc27d', '#f6e8c3', '#c7eae5', '#80cdc1', '#35978f', '#01665e'];
@@ -592,11 +753,11 @@ function valores(r, v) {
   for (let i = 0; i < r.N; i++) if (r.lleno[i] && r.G.mask[i] && !NUBE_SCL.has(r.scl[i])) out[i] = f(r.b, i);
   return r.val[v] = out;
 }
-function cuantiles(vals) { vals.sort((a, b) => a - b); return p => vals[Math.min(vals.length - 1, Math.floor(p * vals.length))]; }
+function cuantiles(vals) { if (ArrayBuffer.isView(vals)) vals.sort(); else vals.sort((a, b) => a - b); return p => vals[Math.min(vals.length - 1, Math.floor(p * vals.length))]; }
+function soloValidos(a) { let n = 0; for (let i = 0; i < a.length; i++) if (!isNaN(a[i])) n++; const out = new Float32Array(n); let j = 0; for (let i = 0; i < a.length; i++) if (!isNaN(a[i])) out[j++] = a[i]; return out; }
 function estadisticas(r, v) {
   if (r.est[v] !== undefined) return r.est[v];
-  const a = valores(r, v), vals = [];
-  for (let i = 0; i < r.N; i++) if (!isNaN(a[i])) vals.push(a[i]);
+  const a = valores(r, v), vals = soloValidos(a);
   if (!vals.length) return r.est[v] = null;
   const media = vals.reduce((s, x) => s + x, 0) / vals.length, q = cuantiles(vals);
   const e = {media, p2: q(.02), p10: q(.1), p50: q(.5), p90: q(.9), p98: q(.98)};
@@ -644,8 +805,7 @@ function valoresDif() {
 function estDif() {
   const k = 'est_' + vistaIndice();
   if (S.comp[k] !== undefined) return S.comp[k];
-  const d = valoresDif(), vals = [];
-  for (let i = 0; i < d.length; i++) if (!isNaN(d[i])) vals.push(d[i]);
+  const d = valoresDif(), vals = soloValidos(d);
   if (!vals.length) return S.comp[k] = null;
   let baja = 0, sube = 0, s = 0;
   for (const x of vals) { s += x; if (x < -0.1) baja++; else if (x > 0.1) sube++; }
