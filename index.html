@@ -391,7 +391,33 @@ async function buscarEscenas() {
     if (!grupos.has(k)) grupos.set(k, {fecha: f.properties.datetime, sat: f.properties.platform.replace('sentinel-', 'S').toUpperCase(), items: [], nubeEsc: []});
     const g = grupos.get(k); g.items.push(f); g.nubeEsc.push(f.properties['eo:cloud_cover']);
   }
-  return [...grupos.values()].sort((a, b) => b.fecha.localeCompare(a.fecha));
+  // una sola fila por día: si el área cae en dos pasadas (por ejemplo S2A y S2B), se guardan las dos como candidatas
+  const dias = new Map();
+  for (const p of [...grupos.values()].sort((a, b) => b.fecha.localeCompare(a.fecha))) {
+    const d = p.fecha.slice(0, 10);
+    if (!dias.has(d)) dias.set(d, {fecha: p.fecha, sat: p.sat, items: p.items, nubeEsc: [], cands: []});
+    const g = dias.get(d); g.cands.push(p); g.nubeEsc.push(...p.nubeEsc);
+  }
+  return [...dias.values()];
+}
+// Elige, entre las pasadas del día, la que deja más superficie útil del área (cobertura sin nubes)
+async function resolver(g) {
+  if (g.mejor) return g.mejor;
+  if (!g.cands || g.cands.length === 1) g.mejor = g.cands ? g.cands[0] : g;
+  else {
+    const rs = await Promise.all(g.cands.map(c => procesar(c, true).catch(e => { console.warn(e); return null; })));
+    let mejor = null, mejorUtil = -1;
+    g.cands.forEach((c, i) => {
+      const r = rs[i]; if (!r) return;
+      c.nubeArea = r.nubePct; c.cob = r.cobertura;
+      const util = r.cobertura * (1 - r.nubePct / 100);
+      if (util > mejorUtil + 1e-6) { mejorUtil = util; mejor = c; }
+    });
+    g.mejor = mejor || g.cands[0];
+  }
+  const m = g.mejor;
+  if (m !== g) { g.items = m.items; g.sat = m.sat; g.fecha = m.fecha; if (m.nubeArea != null) { g.nubeArea = m.nubeArea; g.cob = m.cob; } }
+  return m;
 }
 function pintarLista() {
   const el = $('#lista'); el.innerHTML = '';
@@ -399,7 +425,7 @@ function pintarLista() {
   S.grupos.forEach((g, i) => {
     const d = document.createElement('div'); d.className = 'esc' + (S.sel === g ? ' sel' : '');
     const nubeArea = g.nubeArea == null ? '' : `<span class="tag ${g.nubeArea < 2 ? 'ok' : g.nubeArea < 20 ? 'med' : 'mal'}">${fmt(g.nubeArea, 0)}% nubes en el área</span>`;
-    d.innerHTML = `<div><b>${fechaLarga(g.fecha)}</b><small>${g.sat} · ${fmt(Math.min(...g.nubeEsc), 0)}% nubes en la escena</small></div>${nubeArea || '<span class="tag">Ver</span>'}`;
+    d.innerHTML = `<div><b>${fechaLarga(g.fecha)}</b><small>${g.cands && g.cands.length > 1 && !g.mejor ? g.cands.map(c => c.sat).join(' y ') + ' (se usa la mejor)' : g.sat} · ${fmt(Math.min(...g.nubeEsc), 0)}% nubes en la escena</small></div>${nubeArea || '<span class="tag">Ver</span>'}`;
     d.onclick = () => cargarGrupo(g);
     el.appendChild(d);
   });
@@ -418,7 +444,7 @@ $('#bUltima').onclick = async () => {
     for (let i = 0; i < cand.length; ) {
       const lote = cand.slice(i, i + (i === 0 ? 1 : 4)); i += lote.length;
       busy(`Revisando nubes del ${fechaLarga(lote[lote.length - 1].fecha)} al ${fechaLarga(lote[0].fecha)} (${i}/${cand.length})…`);
-      const rs = await Promise.all(lote.map(g => procesar(g, true).catch(e => { console.warn(e); return null; })));
+      const rs = await Promise.all(lote.map(g => resolver(g).then(m => procesar(m, true)).catch(e => { console.warn(e); return null; })));
       lote.forEach((g, j) => { const r = rs[j]; g.nubeArea = r ? r.nubePct : 100; g.cob = r ? r.cobertura : 0; });
       pintarLista();
       const limpia = lote.find(g => g.cob > 0.95 && g.nubeArea < 2);
@@ -901,7 +927,7 @@ async function cargarGrupo(g) {
   if (S.comp && S.comp.elegir) return cargarComparacion(g);
   try {
     busy(`Bajando la imagen del ${fechaLarga(g.fecha)}…`);
-    const r = await procesar(g, false);
+    const r = await procesar(await resolver(g), false);
     if (r) await asegurarBandas(r, VISTAS[S.vista].bandas || []);
     busy();
     if (!r) { toast('Esa imagen no cubre el área.'); return; }
@@ -918,7 +944,7 @@ async function cargarComparacion(g) {
   if (g === S.sel) { toast('Elegí una fecha distinta a la que estás viendo.'); return; }
   try {
     busy(`Bajando la imagen del ${fechaLarga(g.fecha)} para comparar…`);
-    const r = await procesar(g, false);
+    const r = await procesar(await resolver(g), false);
     if (r) await asegurarBandas(r, [...(VISTAS[S.vista].bandas || []), ...(VISTAS[vistaIndice()].bandas || [])]);
     busy();
     if (!r) { toast('Esa imagen no cubre el área.'); return; }
