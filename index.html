@@ -144,7 +144,7 @@
     <div class="row"><label>Transparencia</label><input id="opac" type="range" min="0" max="100" value="100"></div>
     <div id="stats"></div>
     <div class="row"><button id="bJpg" class="primary">⬇️ Descargar JPG</button><button id="bComparar">🔀 Comparar con otra fecha</button></div>
-    <div class="muted">Tocá el mapa para ver el valor de un punto. NDRE: vigor cuando el cultivo ya cerró el surco. Humedad: agua en la vegetación (más azul, más húmedo). Elevación: terreno sin árboles ni edificios (30 m); la relativa muestra cuánto está cada punto por arriba o por abajo del promedio del área. Tiene un error de 1 a 2 m: sirve para lomas y bajos marcados.</div>
+    <div class="muted">Tocá el mapa para ver el valor de un punto. NDRE: vigor cuando el cultivo ya cerró el surco. Humedad: agua en la vegetación (más azul, más húmedo). Elevación: terreno sin árboles ni edificios (30 m); la relativa muestra cuánto está cada punto por arriba o por abajo del terreno que lo rodea (750 m a la redonda), igual que el script de Earth Engine. Tiene un error de 1 a 2 m: sirve para lomas y bajos marcados.</div>
   </section>
 
   <section id="secComp" hidden>
@@ -625,28 +625,64 @@ function codigoWorker() {
     return {out, transfer: Object.values(out).map(a => a.buffer)};
   }
   const GEDTM = 'https://s3.opengeohub.org/global/dtm/v1.2/gedtm_rf_m_30m_s_20060101_20151231_go_epsg.4326.3855_v1.2.tif';
-  // Elevación del terreno (GEDTM30, en grados WGS84): interpolación bilineal al centro de cada píxel de la grilla
+  // Elevación del terreno (GEDTM30, en grados WGS84) y elevación relativa igual que el script de GEE:
+  // DEM suavizado (media 3x3) menos la media del DEM suavizado en un círculo de 750 m alrededor de cada punto
+  const RADIO_REL = 750;
   async function elevacion(m) {
-    const G = m.G, N = G.nx * G.ny, mask = G.mask, out = new Float32Array(N).fill(NaN);
+    const G = m.G, N = G.nx * G.ny, mask = G.mask, out = new Float32Array(N).fill(NaN), rel = new Float32Array(N).fill(NaN);
     const tiff = await abrir(GEDTM), n = await tiff.getImageCount(), im0 = await tiff.getImage(0);
     const bb = im0.getBoundingBox(), rx0 = Math.abs(im0.getResolution()[0]), W0 = im0.getWidth(), resDeg = G.res / 111320;
     let im = im0, rx = rx0;
     for (let i = 1; i < n; i++) { const c = await tiff.getImage(i); const r = rx0 * W0 / c.getWidth(); if (r <= resDeg * 1.01) { im = c; rx = r; } else break; }
     const ox = bb[0], oy = bb[3], W = im.getWidth(), H = im.getHeight();
-    const x0 = clamp(Math.floor((G.w - ox) / rx) - 2, 0, W), x1 = clamp(Math.ceil((G.e - ox) / rx) + 2, 0, W);
-    const y0 = clamp(Math.floor((oy - G.n) / rx) - 2, 0, H), y1 = clamp(Math.ceil((oy - G.s) / rx) + 2, 0, H);
+    const mLon = 111320 * Math.cos((G.n + G.s) / 2 * Math.PI / 180), mLat = 110574;
+    const mx = Math.ceil((RADIO_REL + 60) / mLon / rx) + 3, my = Math.ceil((RADIO_REL + 60) / mLat / rx) + 3;
+    const x0 = clamp(Math.floor((G.w - ox) / rx) - mx, 0, W), x1 = clamp(Math.ceil((G.e - ox) / rx) + mx, 0, W);
+    const y0 = clamp(Math.floor((oy - G.n) / rx) - my, 0, H), y1 = clamp(Math.ceil((oy - G.s) / rx) + my, 0, H);
     if (x1 <= x0 || y1 <= y0) return {out: null};
-    const data = (await im.readRasters({window: [x0, y0, x1, y1]}))[0], w = x1 - x0, h = y1 - y0;
-    const val = (cc, rr) => { cc = clamp(cc, 0, w - 1); rr = clamp(rr, 0, h - 1); const v = data[rr * w + cc]; return v > 1e30 || v < -1000 ? NaN : v; };
+    const data = (await im.readRasters({window: [x0, y0, x1, y1]}))[0], w = x1 - x0, h = y1 - y0, M = w * h;
+    const dem = new Float32Array(M);
+    for (let i = 0; i < M; i++) { const v = data[i]; dem[i] = v > 1e30 || v < -1000 ? NaN : v; }
+    // Suavizado: media de los 3x3 vecinos (círculo de 1,5 píxeles)
+    const suave = new Float32Array(M).fill(NaN);
+    for (let r = 0; r < h; r++) for (let c = 0; c < w; c++) {
+      if (isNaN(dem[r * w + c])) continue;
+      let s = 0, k = 0;
+      for (let dy = -1; dy <= 1; dy++) { const rr = r + dy; if (rr < 0 || rr >= h) continue; for (let dx = -1; dx <= 1; dx++) { const cc = c + dx; if (cc < 0 || cc >= w) continue; const v = dem[rr * w + cc]; if (!isNaN(v)) { s += v; k++; } } }
+      suave[r * w + c] = s / k;
+    }
+    // Media local en un círculo de RADIO_REL metros (sumas acumuladas por fila)
+    const w1 = w + 1, S = new Float64Array(h * w1), C = new Uint32Array(h * w1);
+    for (let r = 0; r < h; r++) for (let c = 0; c < w; c++) { const v = suave[r * w + c], o = r * w1 + c; S[o + 1] = S[o] + (isNaN(v) ? 0 : v); C[o + 1] = C[o] + (isNaN(v) ? 0 : 1); }
+    const Rx = RADIO_REL / (rx * mLon), Ry = RADIO_REL / (rx * mLat), ky = Math.floor(Ry), ancho = [];
+    for (let dy = -ky; dy <= ky; dy++) ancho.push(Math.floor(Rx * Math.sqrt(Math.max(0, 1 - (dy / Ry) ** 2))));
+    const relW = new Float32Array(M).fill(NaN);
+    const ra = clamp(Math.floor((oy - G.n) / rx) - y0 - 2, 0, h - 1), rb = clamp(Math.ceil((oy - G.s) / rx) - y0 + 2, 0, h - 1);
+    const ca = clamp(Math.floor((G.w - ox) / rx) - x0 - 2, 0, w - 1), cb = clamp(Math.ceil((G.e - ox) / rx) - x0 + 2, 0, w - 1);
+    for (let r = ra; r <= rb; r++) for (let c = ca; c <= cb; c++) {
+      const v = suave[r * w + c]; if (isNaN(v)) continue;
+      let s = 0, k = 0;
+      for (let j = 0; j < ancho.length; j++) {
+        const rr = r + j - ky; if (rr < 0 || rr >= h) continue;
+        const a = Math.max(0, c - ancho[j]), b = Math.min(w - 1, c + ancho[j]), o = rr * w1;
+        s += S[o + b + 1] - S[o + a]; k += C[o + b + 1] - C[o + a];
+      }
+      relW[r * w + c] = v - s / k;
+    }
+    const bil = (arr, fx, fy) => {
+      const cx = Math.floor(fx), cy = Math.floor(fy), tx = fx - cx, ty = fy - cy;
+      const val = (cc, rr) => arr[clamp(rr, 0, h - 1) * w + clamp(cc, 0, w - 1)];
+      return (val(cx, cy) * (1 - tx) + val(cx + 1, cy) * tx) * (1 - ty) + (val(cx, cy + 1) * (1 - tx) + val(cx + 1, cy + 1) * tx) * ty;
+    };
     for (let r = 0; r < G.ny; r++) {
-      const la = ilat(G.Y1 - (r + 0.5) * G.dY), fy = (oy - la) / rx - y0 - 0.5, cy = Math.floor(fy), ty = fy - cy;
+      const fy = (oy - ilat(G.Y1 - (r + 0.5) * G.dY)) / rx - y0 - 0.5;
       for (let c = 0; c < G.nx; c++) {
         const i = r * G.nx + c; if (!mask[i]) continue;
-        const fx = (ilon(G.X0 + (c + 0.5) * G.dX) - ox) / rx - x0 - 0.5, cx = Math.floor(fx), tx = fx - cx;
-        out[i] = (val(cx, cy) * (1 - tx) + val(cx + 1, cy) * tx) * (1 - ty) + (val(cx, cy + 1) * (1 - tx) + val(cx + 1, cy + 1) * tx) * ty;
+        const fx = (ilon(G.X0 + (c + 0.5) * G.dX) - ox) / rx - x0 - 0.5;
+        out[i] = bil(dem, fx, fy); rel[i] = bil(relW, fx, fy);
       }
     }
-    return {out, transfer: [out.buffer]};
+    return {out: {elev: out, rel}, transfer: [out.buffer, rel.buffer]};
   }
   self.onmessage = async e => {
     const m = e.data;
@@ -747,18 +783,15 @@ async function procesar(grupo, soloNubes = false) {
 // Elevación: no depende de la fecha, se guarda por área y se reutiliza en todas las imágenes
 const memoriaElev = new Map();
 async function obtenerElevacion(r) {
-  const key = claveAoi() + '|elev|' + r.N;
-  let elev = memoriaElev.get(key) || await dbGet('nubes', key);
-  if (!elev) {
-    elev = await pedir({tipo: 'elevacion', G: gw(r.G)});
-    if (!elev) throw new Error('no hay datos de elevación para esta zona');
-    if (r.N <= MAX_PX_MEMORIA) dbPut('nubes', key, elev);
+  const key = claveAoi() + '|elev2|' + r.N;
+  let e = memoriaElev.get(key) || await dbGet('nubes', key);
+  if (!e) {
+    e = await pedir({tipo: 'elevacion', G: gw(r.G)});
+    if (!e) throw new Error('no hay datos de elevación para esta zona');
+    if (r.N <= MAX_PX_MEMORIA) dbPut('nubes', key, e);
   }
-  memoriaElev.set(key, elev); while (memoriaElev.size > 3) memoriaElev.delete(memoriaElev.keys().next().value);
-  let s = 0, n = 0; for (let i = 0; i < elev.length; i++) if (!isNaN(elev[i])) { s += elev[i]; n++; }
-  const media = n ? s / n : 0, elevrel = new Float32Array(elev.length);
-  for (let i = 0; i < elev.length; i++) elevrel[i] = elev[i] - media;
-  return {elev, elevrel};
+  memoriaElev.set(key, e); while (memoriaElev.size > 3) memoriaElev.delete(memoriaElev.keys().next().value);
+  return {elev: e.elev, elevrel: e.rel};
 }
 async function asegurarBandas(r, nombres) {
   if (nombres.includes('elev') && !r.b.elev) Object.assign(r.b, await obtenerElevacion(r));
@@ -797,7 +830,7 @@ if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.se
 const PAL_HUM = ['#8c510a', '#bf812d', '#dfc27d', '#f6e8c3', '#c7eae5', '#80cdc1', '#35978f', '#01665e'];
 const PAL_DIF = ['#b2182b', '#d6604d', '#f4a582', '#fddbc7', '#f7f7f7', '#d9f0d3', '#a6dba0', '#5aae61', '#1b7837'];
 const PAL_ELEV = ['#2c7bb6', '#00a6ca', '#00ccbc', '#90eb9d', '#ffff8c', '#f9d057', '#f29e2e', '#e76818', '#d7191c'];
-const PAL_REL = ['#2166ac', '#4393c3', '#92c5de', '#d1e5f0', '#f7f7f7', '#f6e8c3', '#dfc27d', '#bf812d', '#8c510a'];
+const PAL_REL = ['#08306b', '#08519c', '#2171b5', '#4292c6', '#6baed6', '#9ecae1', '#c6dbef', '#eaf3fa', '#fff7dd', '#fee391', '#fec44f', '#fe9929', '#ec7014', '#cc4c02', '#993404', '#662506'];
 const nd = (a, c) => (a + c) !== 0 ? (a - c) / (a + c) : NaN;
 const VISTAS = {
   rgb: {nombre: 'Color real', archivo: 'Color_real'},
@@ -805,13 +838,13 @@ const VISTAS = {
   ndre: {nombre: 'NDRE', archivo: 'NDRE', bandas: ['nir08', 'rededge1'], indice: (b, i) => nd(b.nir08[i], b.rededge1[i]), rango: [0, 0.6], paleta: PALETA},
   ndmi: {nombre: 'Humedad (NDMI)', archivo: 'Humedad_NDMI', bandas: ['nir08', 'swir16'], indice: (b, i) => nd(b.nir08[i], b.swir16[i]), rango: [-0.2, 0.5], paleta: PAL_HUM},
   elev: {nombre: 'Elevación (m)', archivo: 'Elevacion', bandas: ['elev'], indice: (b, i) => b.elev[i], rango: [0, 100], paleta: PAL_ELEV, auto: true, terreno: true},
-  elevrel: {nombre: 'Elevación relativa (m)', archivo: 'Elevacion_relativa', bandas: ['elev'], indice: (b, i) => b.elevrel[i], rango: [-2, 2], paleta: PAL_REL, auto: true, simetrico: true, terreno: true},
+  elevrel: {nombre: 'Elevación relativa (m)', archivo: 'Elevacion_relativa', bandas: ['elev'], indice: (b, i) => b.elevrel[i], rango: [-1.5, 1.5], paleta: PAL_REL, simetrico: true, terreno: true},
 };
 Object.assign(S, {capas: [], capaB: null, comp: null, jpgP: null, contraste: store.get('contraste') === true, puntos: store.get('puntos') || [], rec: null});
 $('#auto').checked = S.contraste;
 const vistaIndice = () => VISTAS[S.vista].indice ? S.vista : 'ndvi';
 const fmtV = x => x == null || isNaN(x) ? 's/d' : fmt(x);
-const signo = x => (x > 0 ? '+' : '') + fmt(x);
+const signo = x => (Math.abs(x) < 0.005 ? '' : x > 0 ? '+' : '') + fmt(Math.abs(x) < 0.005 ? 0 : x);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
 
 const cachePal = new Map();
@@ -847,7 +880,6 @@ function rangoDe(r, v) {
   let lo = Infinity, hi = -Infinity;
   const rs = S.comp && S.comp.r && (r === S.res || r === S.comp.r) ? [S.res, S.comp.r] : [r];
   for (const x of rs) { const e = estadisticas(x, v); if (e) { lo = Math.min(lo, e.p2); hi = Math.max(hi, e.p98); } }
-  if (isFinite(lo) && V.simetrico) { const m = Math.max(0.1, Math.abs(lo), Math.abs(hi)); return [-m, m]; }
   return isFinite(lo) && hi - lo >= 0.02 ? [lo, hi] : V.rango;
 }
 function lienzo(r, v) {
@@ -933,7 +965,7 @@ function leyenda() {
   const el = $('#leyenda'), comp = S.comp && S.comp.r ? S.comp : null;
   let pal, lo, hi, tit, f = fmt;
   if (comp && comp.modo === 'dif') { pal = PAL_DIF; [lo, hi] = rangoDif(); tit = 'Cambio de ' + VISTAS[vistaIndice()].nombre + ' (rojo bajó, verde subió)'; f = signo; }
-  else if (VISTAS[S.vista].indice) { pal = VISTAS[S.vista].paleta; [lo, hi] = rangoDe(S.res, S.vista); tit = VISTAS[S.vista].nombre + (S.contraste && !VISTAS[S.vista].auto ? ' · contraste automático' : ''); if (VISTAS[S.vista].simetrico) { f = signo; tit += ' · azul más bajo, marrón más alto que el promedio'; } }
+  else if (VISTAS[S.vista].indice) { pal = VISTAS[S.vista].paleta; [lo, hi] = rangoDe(S.res, S.vista); tit = VISTAS[S.vista].nombre + (S.contraste && !VISTAS[S.vista].auto ? ' · contraste automático' : ''); if (VISTAS[S.vista].simetrico) { f = signo; tit += ' · azul: bajo · naranja: loma (respecto de 750 m alrededor)'; } }
   else { el.style.display = 'none'; return; }
   el.style.display = 'block';
   el.innerHTML = `<div class="muted">${tit}</div><div class="barra" style="background:linear-gradient(90deg,${pal.join(',')})"></div><div class="ejes"><span>${f(lo)}</span><span>${f((lo + hi) / 2)}</span><span>${f(hi)}</span></div>`;
@@ -956,14 +988,14 @@ function pintarStats() {
       <div><small>${nom} promedio ${fechaLarga(pos.grupo.fecha)}</small><b>${ep ? fmt(ep.media) : 's/d'}</b></div></div>
       <div class="muted">Mové el deslizador para pasar de una fecha a la otra. A la izquierda de la línea blanca está la fecha anterior.</div>`;
   } else {
-    const e = estadisticas(r, vd);
+    const e = estadisticas(r, vd), fv = VISTAS[vd].simetrico ? signo : fmt;
     if (!e) html = '<div class="muted">El área está cubierta de nubes en esta fecha.</div>';
     else {
       html = `<div class="stats">
-      <div><small>${nom} promedio</small><b>${fmt(e.media)}</b></div>
-      <div><small>Mediana (P10 – P90)</small><b>${fmt(e.p50)}</b> <span class="muted">${fmt(e.p10)} – ${fmt(e.p90)}</span></div>
+      <div><small>${nom} promedio</small><b>${fv(e.media)}</b></div>
+      <div><small>Mediana (P10 – P90)</small><b>${fv(e.p50)}</b> <span class="muted">${fv(e.p10)} – ${fv(e.p90)}</span></div>
       <div><small>Superficie analizada</small><b>${fmt0(e.ha)} ha</b></div>
-      <div><small>Nubes / sombras en el área</small><b>${fmt(r.nubePct, 0)}%</b></div></div>`;
+      ${VISTAS[vd].terreno ? `<div><small>Desnivel en el área (P2 – P98)</small><b>${fmt(e.p98 - e.p2)} m</b></div>` : `<div><small>Nubes / sombras en el área</small><b>${fmt(r.nubePct, 0)}%</b></div>`}</div>`;
       if (e.clases) {
         const cols = ['#d73027', '#fdae61', '#fee08b', '#a6d96a', '#1a9850'];
         html += `<div class="muted">Distribución del NDVI: &lt;0,2 · 0,2–0,4 · 0,4–0,6 · 0,6–0,8 · &gt;0,8</div>
