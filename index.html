@@ -91,6 +91,8 @@
   .punto-lista{display:flex;justify-content:space-between;align-items:center;font-size:13px;border-bottom:1px solid var(--borde);padding:6px 0;gap:8px}
   .punto-lista button{padding:4px 9px}
   .dot{width:16px;height:16px;border-radius:50%;background:#1e88e5;border:3px solid #fff;box-shadow:0 0 6px rgba(0,0,0,.5)}
+  #bYo{display:flex;align-items:center;justify-content:center;color:#666}
+  #bYo.on{color:#1e88e5}
   #medPill{position:fixed;top:calc(env(safe-area-inset-top) + 90px);right:10px;z-index:900;display:none;flex-direction:column;align-items:flex-end;gap:6px;max-width:72vw}
   #medPill .pill{background:rgba(255,255,255,.96);border-radius:12px;padding:8px 10px;font-size:14px;box-shadow:0 2px 8px rgba(0,0,0,.3)}
   #medPill button{box-shadow:0 2px 8px rgba(0,0,0,.3);background:#fff}
@@ -156,7 +158,7 @@
   <section>
     <h3>4 · Recorrida</h3>
     <div class="row"><button id="bRec">🧭 Iniciar recorrida</button><button id="bKml" disabled>⬇️ Exportar puntos (KML)</button></div>
-    <div class="muted">Muestra tu posición en vivo arriba de la imagen y el valor de NDVI donde estás parado. Para marcar un punto, tocá «📌 Marcar acá» o mantené apretado el mapa.</div>
+    <div class="muted">Tu posición se ve siempre en el mapa (punto azul). Con la flecha de arriba a la derecha la pantalla te va siguiendo; si movés el mapa con el dedo, deja de seguirte. La recorrida además muestra el NDVI donde estás parado y deja la pantalla prendida. Para marcar un punto, tocá «📌 Marcar acá» o mantené apretado el mapa.</div>
     <div id="listaPuntos"></div>
   </section>
 
@@ -219,6 +221,9 @@ const map = L.map('map', {zoomControl: false, attributionControl: true}).setView
 L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {maxZoom: 19, attribution: 'Esri, Maxar, Earthstar'}).addTo(map);
 L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', {maxZoom: 19, opacity: .8}).addTo(map);
 L.control.zoom({position: 'topright'}).addTo(map);
+// Botón «seguirme» (debajo del zoom)
+L.Control.Yo = L.Control.extend({options: {position: 'topright'}, onAdd() { const d = L.DomUtil.create('div', 'leaflet-bar'); d.innerHTML = '<a href="#" id="bYo" role="button" title="Seguir mi ubicación"><svg width="18" height="18" viewBox="0 0 24 24"><path d="M21 3 3 10.5l7.2 2.3L12.5 20z" fill="currentColor"/></svg></a>'; L.DomEvent.disableClickPropagation(d); return d; }});
+new L.Control.Yo().addTo(map);
 map.pm.setLang('es');
 
 const S = { aoi: null, aoiLayer: null, centro: null, centroLayer: null, modo: null, grupos: [], sel: null, res: null, overlay: null, vista: 'rgb', jpg: {} };
@@ -1159,36 +1164,59 @@ function agregarPunto(lat, lon) {
   guardarPuntos(); toast('Punto guardado.');
 }
 map.on('contextmenu', e => { if (!map.pm.globalDrawModeEnabled()) agregarPunto(e.latlng.lat, e.latlng.lng); });
+// Ubicación en vivo: arranca sola al abrir la app y se pausa cuando la app queda en segundo plano
+const gps = {id: null, pos: null, acc: null, marca: null, circ: null, seguir: false, centrar: false, avisado: false};
+function gpsActualizar(p) {
+  const ll = [p.coords.latitude, p.coords.longitude], acc = p.coords.accuracy; gps.pos = ll; gps.acc = acc;
+  if (!gps.marca) {
+    gps.circ = L.circle(ll, {radius: acc, color: '#1e88e5', weight: 1.5, fill: false, interactive: false}).addTo(map);
+    gps.marca = L.marker(ll, {icon: L.divIcon({className: '', html: '<div class="dot"></div>', iconSize: [16, 16], iconAnchor: [8, 8]}), interactive: false, zIndexOffset: 1000}).addTo(map);
+  } else { gps.marca.setLatLng(ll); gps.circ.setLatLng(ll).setRadius(acc); }
+  if (gps.seguir) { if (gps.centrar) { map.setView(ll, Math.max(map.getZoom(), 16)); gps.centrar = false; } else map.panTo(ll); }
+  actualizarRec();
+}
+function gpsIniciar() {
+  if (gps.id != null || !navigator.geolocation) return;
+  gps.id = navigator.geolocation.watchPosition(gpsActualizar, err => {
+    if (err.code !== 1) return;
+    gpsDetener(); seguir(false);
+    if (!gps.avisado) { gps.avisado = true; toast('No diste permiso de ubicación. Activalo en Ajustes › Privacidad › Localización.', 6000); }
+  }, {enableHighAccuracy: true, maximumAge: 5000, timeout: 30000});
+}
+function gpsDetener() { if (gps.id != null) navigator.geolocation.clearWatch(gps.id); gps.id = null; }
+function seguir(si) {
+  gps.seguir = si; $('#bYo').classList.toggle('on', si);
+  if (!si) return;
+  gpsIniciar();
+  if (gps.pos) map.setView(gps.pos, Math.max(map.getZoom(), 16)); else { gps.centrar = true; toast('Buscando señal de GPS…'); }
+}
+$('#bYo').onclick = e => { e.preventDefault(); gps.avisado = false; seguir(!gps.seguir); };
+map.on('dragstart', () => { if (gps.seguir) seguir(false); });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { gpsIniciar(); pedirPantalla(); } else gpsDetener(); });
+gpsIniciar();
+
+// Recorrida: usa la misma ubicación en vivo; suma el NDVI del lugar y deja la pantalla prendida
 async function pedirPantalla() { try { if (S.rec && navigator.wakeLock) S.rec.lock = await navigator.wakeLock.request('screen'); } catch (e) {} }
+function actualizarRec() {
+  if (!S.rec) return;
+  if (!gps.pos) { $('#recInfo').textContent = 'Buscando señal de GPS…'; return; }
+  const v = valorEn(gps.pos[0], gps.pos[1]);
+  $('#recInfo').innerHTML = (v != null ? `NDVI acá: <b>${fmt(v)}</b>` : (S.res ? 'Fuera del área o sin dato' : 'Cargá una imagen para ver el NDVI')) + `<br><span class="muted">GPS ±${Math.round(gps.acc)} m</span>`;
+}
 function iniciarRec() {
   if (!navigator.geolocation) { toast('Este navegador no permite ubicación.'); return; }
-  S.rec = {primera: true, marca: null, circ: null, pos: null, lock: null};
-  S.rec.id = navigator.geolocation.watchPosition(p => {
-    const R = S.rec; if (!R) return;
-    const ll = [p.coords.latitude, p.coords.longitude], acc = p.coords.accuracy; R.pos = ll;
-    if (!R.marca) {
-      R.circ = L.circle(ll, {radius: acc, color: '#1e88e5', weight: 1.5, fill: false, interactive: false}).addTo(map);
-      R.marca = L.marker(ll, {icon: L.divIcon({className: '', html: '<div class="dot"></div>', iconSize: [16, 16], iconAnchor: [8, 8]}), interactive: false}).addTo(map);
-    } else { R.marca.setLatLng(ll); R.circ.setLatLng(ll).setRadius(acc); }
-    if (R.primera) { map.setView(ll, Math.max(map.getZoom(), 16)); R.primera = false; }
-    const v = valorEn(ll[0], ll[1]);
-    $('#recInfo').innerHTML = (v != null ? `NDVI acá: <b>${fmt(v)}</b>` : (S.res ? 'Fuera del área o sin dato' : 'Cargá una imagen para ver el NDVI')) + `<br><span class="muted">GPS ±${Math.round(acc)} m</span>`;
-  }, err => { toast(err.code === 1 ? 'No diste permiso de ubicación. Activalo en Ajustes › Safari › Ubicación.' : 'No se pudo obtener la ubicación.', 6000); detenerRec(); },
-  {enableHighAccuracy: true, maximumAge: 5000, timeout: 30000});
+  S.rec = {lock: null}; seguir(true); actualizarRec();
   $('#rec').style.display = 'flex'; $('#bRec').textContent = '⏹ Terminar recorrida'; $('#bRec').classList.add('on');
   pedirPantalla(); minimizar(true);
 }
 function detenerRec() {
   const R = S.rec; if (!R) return;
-  navigator.geolocation.clearWatch(R.id);
-  if (R.marca) map.removeLayer(R.marca); if (R.circ) map.removeLayer(R.circ);
   try { if (R.lock) R.lock.release(); } catch (e) {}
   S.rec = null; $('#rec').style.display = 'none'; $('#bRec').textContent = '🧭 Iniciar recorrida'; $('#bRec').classList.remove('on');
 }
 $('#bRec').onclick = () => S.rec ? detenerRec() : iniciarRec();
-$('#bMarcar').onclick = () => { if (S.rec && S.rec.pos) agregarPunto(S.rec.pos[0], S.rec.pos[1]); else toast('Todavía no hay señal de GPS.'); };
-$('#bCentrar').onclick = () => { if (S.rec && S.rec.pos) map.setView(S.rec.pos, Math.max(map.getZoom(), 16)); };
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') pedirPantalla(); });
+$('#bMarcar').onclick = () => { if (gps.pos) agregarPunto(gps.pos[0], gps.pos[1]); else toast('Todavía no hay señal de GPS.'); };
+$('#bCentrar').onclick = () => seguir(true);
 $('#bKml').onclick = () => {
   const pm = S.puntos.map((p, k) => {
     const desc = [`Marcado: ${new Date(p.fecha).toLocaleString('es-AR')}`, p.ndvi != null ? `NDVI ${fmt(p.ndvi)} (imagen del ${p.imagen ? fechaLarga(p.imagen) : '-'})` : ''].filter(Boolean).join(' · ');
