@@ -82,14 +82,6 @@
   .seg button{flex:1 1 22%;font-size:13px;padding:8px 6px}
   .chk{display:flex;align-items:center;gap:8px;font-size:14px;margin:8px 0}
   .chk input{width:20px;height:20px;flex:none}
-  #rec{position:fixed;top:calc(env(safe-area-inset-top) + 90px);left:10px;z-index:900;display:none;flex-direction:column;gap:6px;max-width:70vw}
-  #rec .pill{background:rgba(255,255,255,.96);border-radius:12px;padding:8px 10px;font-size:14px;box-shadow:0 2px 8px rgba(0,0,0,.3)}
-  #rec button{box-shadow:0 2px 8px rgba(0,0,0,.3);background:#fff}
-  #linea{position:fixed;top:0;bottom:0;width:3px;background:#fff;box-shadow:0 0 4px rgba(0,0,0,.6);z-index:850;display:none;pointer-events:none}
-  .etq{position:fixed;top:calc(env(safe-area-inset-top) + 50px);z-index:851;background:rgba(0,0,0,.7);color:#fff;font-size:13px;padding:4px 8px;border-radius:8px;display:none;pointer-events:none}
-  #etqA{left:10px}#etqB{right:50px}
-  .punto-lista{display:flex;justify-content:space-between;align-items:center;font-size:13px;border-bottom:1px solid var(--borde);padding:6px 0;gap:8px}
-  .punto-lista button{padding:4px 9px}
   .dot{width:16px;height:16px;border-radius:50%;background:#1e88e5;border:3px solid #fff;box-shadow:0 0 6px rgba(0,0,0,.5)}
   #bYo{display:flex;align-items:center;justify-content:center;color:#666}
   #bYo.on{color:#1e88e5}
@@ -121,6 +113,7 @@
       <input id="radio" type="number" inputmode="numeric" value="650" min="50" max="15000" step="50">
     </div>
     <div class="muted" id="aoiInfo">Elegí un área: tu ubicación, un punto, un polígono dibujado o un archivo KML / KMZ / GeoJSON / shapefile en .zip.</div>
+    <div class="muted">Tu posición se ve siempre en el mapa (punto azul). Con la flecha de arriba a la derecha el mapa te va siguiendo; si lo movés con el dedo, deja de seguirte. Para girar el mapa usá dos dedos; la brújula que aparece arriba a la derecha lo vuelve al norte.</div>
   </section>
 
   <section>
@@ -152,14 +145,7 @@
   </section>
 
   <section>
-    <h3>4 · Recorrida</h3>
-    <div class="row"><button id="bRec">🧭 Iniciar recorrida</button><button id="bKml" disabled>⬇️ Exportar puntos (KML)</button></div>
-    <div class="muted">Tu posición se ve siempre en el mapa (punto azul). Con la flecha de arriba a la derecha la pantalla te va siguiendo; si movés el mapa con el dedo, deja de seguirte. Para girar el mapa usá dos dedos; la brújula que aparece arriba a la derecha lo vuelve al norte. La recorrida además muestra el NDVI donde estás parado y deja la pantalla prendida. Para marcar un punto, tocá «📌 Marcar acá» o mantené apretado el mapa.</div>
-    <div id="listaPuntos"></div>
-  </section>
-
-  <section>
-    <h3>5 · Medir</h3>
+    <h3>4 · Medir</h3>
     <div class="row"><button id="bMedDist">📏 Distancia</button><button id="bMedSup">📐 Superficie</button></div>
     <div class="muted">Tocá el mapa para marcar los puntos y después «Terminar». La superficie da hectáreas, perímetro y, si hay una imagen cargada, el índice promedio de esa zona. Con «Usar como área» la zona pasa a ser el área para buscar imágenes.</div>
     <div id="listaMed"></div>
@@ -173,7 +159,6 @@
 <div id="busy"><div><i></i><span id="busyTxt">Cargando…</span></div></div>
 <div id="toast"></div>
 <div id="medPill"><div class="pill" id="medTxt"></div><div class="row" style="margin:0"><button id="bMedTerminar">✔ Terminar</button><button id="bMedCancelar">✖ Cancelar</button></div></div>
-<div id="rec"><div class="pill" id="recInfo">Buscando señal de GPS…</div><div class="row" style="margin:0"><button id="bMarcar">📌 Marcar acá</button><button id="bCentrar">🎯 Centrar</button></div></div>
 <div id="linea"></div><div id="etqA" class="etq"></div><div id="etqB" class="etq"></div>
 <div id="modal"><img id="modalImg" alt=""><p>Mantené apretada la imagen y elegí «Guardar en Fotos».</p><button id="bCerrar">Cerrar</button></div>
 
@@ -836,7 +821,7 @@ const VISTAS = {
   elev: {nombre: 'Elevación (m)', archivo: 'Elevacion', bandas: ['elev'], indice: (b, i) => b.elev[i], rango: [0, 100], paleta: PAL_ELEV, auto: true, terreno: true},
   elevrel: {nombre: 'Elevación relativa (m)', archivo: 'Elevacion_relativa', bandas: ['elev'], indice: (b, i) => b.elevrel[i], rango: [-1.5, 1.5], paleta: PAL_REL, simetrico: true, terreno: true},
 };
-Object.assign(S, {capas: [], capaB: null, comp: null, jpgP: null, contraste: store.get('contraste') === true, puntos: store.get('puntos') || [], rec: null});
+Object.assign(S, {capas: [], capaB: null, comp: null, jpgP: null, contraste: store.get('contraste') === true});
 $('#auto').checked = S.contraste;
 const vistaIndice = () => VISTAS[S.vista].indice ? S.vista : 'ndvi';
 const fmtV = x => x == null || isNaN(x) ? 's/d' : fmt(x);
@@ -1109,34 +1094,7 @@ map.on('click', e => {
   L.popup({closeButton: false, autoClose: true}).setLatLng(e.latlng).setContent(`${txt}<br><span style="color:#888">${e.latlng.lat.toFixed(5)}, ${e.latlng.lng.toFixed(5)}</span>`).openOn(map);
 });
 
-// ---------- Recorrida ----------
-const capaPuntos = L.layerGroup().addTo(map);
-function valorEn(lat, lon) {
-  const r = S.res; if (!r) return null;
-  const i = indicePix(r, lat, lon); if (i < 0 || NUBE_SCL.has(r.scl[i])) return null;
-  const v = valores(r, 'ndvi')[i]; return isNaN(v) ? null : v;
-}
-function guardarPuntos() { store.set('puntos', S.puntos); pintarPuntos(); }
-function pintarPuntos() {
-  capaPuntos.clearLayers();
-  S.puntos.forEach((p, k) => {
-    L.circleMarker([p.lat, p.lon], {radius: 7, color: '#fff', weight: 2, fillColor: '#ff9800', fillOpacity: 1})
-      .bindPopup(`<b>${esc(p.nota || 'Punto ' + (k + 1))}</b><br>${p.lat.toFixed(5)}, ${p.lon.toFixed(5)}${p.ndvi != null ? '<br>NDVI ' + fmt(p.ndvi) : ''}`).addTo(capaPuntos);
-  });
-  $('#listaPuntos').innerHTML = S.puntos.map((p, k) => `<div class="punto-lista"><span>📌 ${esc(p.nota || 'Punto ' + (k + 1))}${p.ndvi != null ? ' · NDVI ' + fmt(p.ndvi) : ''}</span><button data-k="${k}" class="borrarP">✕</button></div>`).join('')
-    + (S.puntos.length ? '<div class="row"><button id="bBorrarTodo">Borrar todos los puntos</button></div>' : '');
-  $('#bKml').disabled = !S.puntos.length;
-  document.querySelectorAll('.borrarP').forEach(b => b.onclick = () => { S.puntos.splice(+b.dataset.k, 1); guardarPuntos(); });
-  const bt = $('#bBorrarTodo'); if (bt) bt.onclick = () => { if (confirm('¿Borrar todos los puntos?')) { S.puntos = []; guardarPuntos(); } };
-}
-function agregarPunto(lat, lon) {
-  const nota = prompt('Nota para este punto (opcional):', '');
-  if (nota === null) return;
-  const v = valorEn(lat, lon);
-  S.puntos.push({lat, lon, nota: nota.trim(), fecha: new Date().toISOString(), ndvi: v == null ? null : +v.toFixed(3), imagen: S.sel ? S.sel.fecha.slice(0, 10) : null});
-  guardarPuntos(); toast('Punto guardado.');
-}
-map.on('contextmenu', e => { if (!map.pm.globalDrawModeEnabled()) agregarPunto(e.latlng.lat, e.latlng.lng); });
+// ---------- Ubicación en vivo ----------
 // Ubicación en vivo: arranca sola al abrir la app y se pausa cuando la app queda en segundo plano
 const gps = {id: null, pos: null, acc: null, marca: null, circ: null, seguir: false, centrar: false, avisado: false};
 function gpsActualizar(p) {
@@ -1146,7 +1104,6 @@ function gpsActualizar(p) {
     gps.marca = L.marker(ll, {icon: L.divIcon({className: '', html: '<div class="dot"></div>', iconSize: [16, 16], iconAnchor: [8, 8]}), interactive: false, zIndexOffset: 1000}).addTo(map);
   } else { gps.marca.setLatLng(ll); gps.circ.setLatLng(ll).setRadius(acc); }
   if (gps.seguir) { if (gps.centrar) { map.setView(ll, Math.max(map.getZoom(), 16)); gps.centrar = false; } else map.panTo(ll); }
-  actualizarRec();
 }
 function gpsIniciar() {
   if (gps.id != null || !navigator.geolocation) return;
@@ -1165,40 +1122,8 @@ function seguir(si) {
 }
 $('#bYo').onclick = e => { e.preventDefault(); gps.avisado = false; seguir(!gps.seguir); };
 map.on('dragstart', () => { if (gps.seguir) seguir(false); });
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') { gpsIniciar(); pedirPantalla(); } else gpsDetener(); });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') gpsIniciar(); else gpsDetener(); });
 gpsIniciar();
-
-// Recorrida: usa la misma ubicación en vivo; suma el NDVI del lugar y deja la pantalla prendida
-async function pedirPantalla() { try { if (S.rec && navigator.wakeLock) S.rec.lock = await navigator.wakeLock.request('screen'); } catch (e) {} }
-function actualizarRec() {
-  if (!S.rec) return;
-  if (!gps.pos) { $('#recInfo').textContent = 'Buscando señal de GPS…'; return; }
-  const v = valorEn(gps.pos[0], gps.pos[1]);
-  $('#recInfo').innerHTML = (v != null ? `NDVI acá: <b>${fmt(v)}</b>` : (S.res ? 'Fuera del área o sin dato' : 'Cargá una imagen para ver el NDVI')) + `<br><span class="muted">GPS ±${Math.round(gps.acc)} m</span>`;
-}
-function iniciarRec() {
-  if (!navigator.geolocation) { toast('Este navegador no permite ubicación.'); return; }
-  S.rec = {lock: null}; seguir(true); actualizarRec();
-  $('#rec').style.display = 'flex'; $('#bRec').textContent = '⏹ Terminar recorrida'; $('#bRec').classList.add('on');
-  pedirPantalla(); minimizar(true);
-}
-function detenerRec() {
-  const R = S.rec; if (!R) return;
-  try { if (R.lock) R.lock.release(); } catch (e) {}
-  S.rec = null; $('#rec').style.display = 'none'; $('#bRec').textContent = '🧭 Iniciar recorrida'; $('#bRec').classList.remove('on');
-}
-$('#bRec').onclick = () => S.rec ? detenerRec() : iniciarRec();
-$('#bMarcar').onclick = () => { if (gps.pos) agregarPunto(gps.pos[0], gps.pos[1]); else toast('Todavía no hay señal de GPS.'); };
-$('#bCentrar').onclick = () => seguir(true);
-$('#bKml').onclick = () => {
-  const pm = S.puntos.map((p, k) => {
-    const desc = [`Marcado: ${new Date(p.fecha).toLocaleString('es-AR')}`, p.ndvi != null ? `NDVI ${fmt(p.ndvi)} (imagen del ${p.imagen ? fechaLarga(p.imagen) : '-'})` : ''].filter(Boolean).join(' · ');
-    return `<Placemark><name>${esc(p.nota || 'Punto ' + (k + 1))}</name><description>${esc(desc)}</description><Point><coordinates>${p.lon.toFixed(7)},${p.lat.toFixed(7)},0</coordinates></Point></Placemark>`;
-  }).join('\n');
-  const kml = `<?xml version="1.0" encoding="UTF-8"?>\n<kml xmlns="http://www.opengis.net/kml/2.2"><Document><name>Recorrida ${fechaLarga(iso(new Date()))}</name>\n${pm}\n</Document></kml>\n`;
-  compartir(new File([kml], `recorrida_${iso(new Date())}.kml`, {type: 'application/vnd.google-earth.kml+xml'}));
-};
-pintarPuntos();
 
 // ---------- Exportar JPG ----------
 async function compartir(f) {
