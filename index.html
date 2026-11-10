@@ -137,13 +137,13 @@
 
   <section id="secRes" hidden>
     <h3>3 · Resultado <span id="resFecha" class="muted"></span></h3>
-    <div class="seg" id="seg"><button data-v="rgb" class="act">Color real</button><button data-v="ndvi">NDVI</button><button data-v="ndre">NDRE</button><button data-v="ndmi">Humedad</button></div>
+    <div class="seg" id="seg"><button data-v="rgb" class="act">Color real</button><button data-v="ndvi">NDVI</button><button data-v="ndre">NDRE</button><button data-v="ndmi">Humedad</button><button data-v="elev">Elevación</button><button data-v="elevrel">Elev. relativa</button></div>
     <label class="chk"><input type="checkbox" id="auto"> Contraste automático (ajusta los colores a los valores del lote)</label>
     <div id="leyenda" style="display:none;margin-top:4px"></div>
     <div class="row"><label>Transparencia</label><input id="opac" type="range" min="0" max="100" value="100"></div>
     <div id="stats"></div>
     <div class="row"><button id="bJpg" class="primary">⬇️ Descargar JPG</button><button id="bComparar">🔀 Comparar con otra fecha</button></div>
-    <div class="muted">Tocá el mapa para ver el valor de un punto. NDRE: vigor cuando el cultivo ya cerró el surco. Humedad: agua en la vegetación (más azul, más húmedo).</div>
+    <div class="muted">Tocá el mapa para ver el valor de un punto. NDRE: vigor cuando el cultivo ya cerró el surco. Humedad: agua en la vegetación (más azul, más húmedo). Elevación: terreno sin árboles ni edificios (30 m); la relativa muestra cuánto está cada punto por arriba o por abajo del promedio del área. Tiene un error de 1 a 2 m: sirve para lomas y bajos marcados.</div>
   </section>
 
   <section id="secComp" hidden>
@@ -167,7 +167,7 @@
   </section>
 
   <div class="foot">
-    Imágenes: Copernicus Sentinel-2 (ESA), nivel L2A colección 1, vía <a href="https://registry.opendata.aws/sentinel-2-l2a-cogs/" target="_blank" rel="noopener">AWS Open Data</a> y Earth Search de Element 84. Contiene datos modificados de Copernicus Sentinel. Mapa base: Esri World Imagery. Resolución 10 m.
+    Imágenes: Copernicus Sentinel-2 (ESA), nivel L2A colección 1, vía <a href="https://registry.opendata.aws/sentinel-2-l2a-cogs/" target="_blank" rel="noopener">AWS Open Data</a> y Earth Search de Element 84. Contiene datos modificados de Copernicus Sentinel. Elevación: GEDTM30 v1.2 de OpenGeoHub (CC BY 4.0). Mapa base: Esri World Imagery. Resolución 10 m.
   </div>
 </div>
 
@@ -296,7 +296,7 @@ $('#bPunto').onclick = () => setModo(S.modo === 'punto' ? null : 'punto');
 $('#bDraw').onclick = () => {
   if (S.modo === 'dibujo') { setModo(null); return; }
   setModo('dibujo'); if (S.midiendo) cancelarMedicion();
-  map.pm.enableDraw('Polygon', {snappable: false, templineStyle: {color: '#ffeb3b'}, hintlineStyle: {color: '#ffeb3b', dashArray: [5, 5]}, pathOptions: {color: '#ffeb3b'}});
+  map.pm.enableDraw('Polygon', {snappable: false, templineStyle: {color: '#ffeb3b'}, hintlineStyle: {color: '#ffeb3b', dashArray: [5, 5]}, pathOptions: {color: '#ffeb3b', fill: false}});
   minimizar(true);
 };
 map.on('pm:create', e => {
@@ -623,12 +623,37 @@ function codigoWorker() {
     }
     return {out, transfer: Object.values(out).map(a => a.buffer)};
   }
+  const GEDTM = 'https://s3.opengeohub.org/global/dtm/v1.2/gedtm_rf_m_30m_s_20060101_20151231_go_epsg.4326.3855_v1.2.tif';
+  // Elevación del terreno (GEDTM30, en grados WGS84): interpolación bilineal al centro de cada píxel de la grilla
+  async function elevacion(m) {
+    const G = m.G, N = G.nx * G.ny, mask = G.mask, out = new Float32Array(N).fill(NaN);
+    const tiff = await abrir(GEDTM), n = await tiff.getImageCount(), im0 = await tiff.getImage(0);
+    const bb = im0.getBoundingBox(), rx0 = Math.abs(im0.getResolution()[0]), W0 = im0.getWidth(), resDeg = G.res / 111320;
+    let im = im0, rx = rx0;
+    for (let i = 1; i < n; i++) { const c = await tiff.getImage(i); const r = rx0 * W0 / c.getWidth(); if (r <= resDeg * 1.01) { im = c; rx = r; } else break; }
+    const ox = bb[0], oy = bb[3], W = im.getWidth(), H = im.getHeight();
+    const x0 = clamp(Math.floor((G.w - ox) / rx) - 2, 0, W), x1 = clamp(Math.ceil((G.e - ox) / rx) + 2, 0, W);
+    const y0 = clamp(Math.floor((oy - G.n) / rx) - 2, 0, H), y1 = clamp(Math.ceil((oy - G.s) / rx) + 2, 0, H);
+    if (x1 <= x0 || y1 <= y0) return {out: null};
+    const data = (await im.readRasters({window: [x0, y0, x1, y1]}))[0], w = x1 - x0, h = y1 - y0;
+    const val = (cc, rr) => { cc = clamp(cc, 0, w - 1); rr = clamp(rr, 0, h - 1); const v = data[rr * w + cc]; return v > 1e30 || v < -1000 ? NaN : v; };
+    for (let r = 0; r < G.ny; r++) {
+      const la = ilat(G.Y1 - (r + 0.5) * G.dY), fy = (oy - la) / rx - y0 - 0.5, cy = Math.floor(fy), ty = fy - cy;
+      for (let c = 0; c < G.nx; c++) {
+        const i = r * G.nx + c; if (!mask[i]) continue;
+        const fx = (ilon(G.X0 + (c + 0.5) * G.dX) - ox) / rx - x0 - 0.5, cx = Math.floor(fx), tx = fx - cx;
+        out[i] = (val(cx, cy) * (1 - tx) + val(cx + 1, cy) * tx) * (1 - ty) + (val(cx, cy + 1) * (1 - tx) + val(cx + 1, cy + 1) * tx) * ty;
+      }
+    }
+    return {out, transfer: [out.buffer]};
+  }
   self.onmessage = async e => {
     const m = e.data;
     try {
       let r;
       if (m.tipo === 'procesar') r = await procesar(m);
       else if (m.tipo === 'bandas') r = await bandas(m);
+      else if (m.tipo === 'elevacion') r = await elevacion(m);
       else if (m.tipo === 'registrar') { guardarMemo(m.id, {G: m.G, items: m.items, cajas: m.items.map(it => cajaDe(m.G, it)), fuente: m.fuente, PX: m.PX, PY: m.PY}); r = {out: true}; }
       self.postMessage({id: m.rid, ok: true, out: r.out}, r.transfer || []);
     } catch (err) { self.postMessage({id: m.rid, ok: false, error: String((err && err.message) || err)}); }
@@ -718,7 +743,24 @@ async function procesar(grupo, soloNubes = false) {
 }
 
 // Baja bandas extra (borde rojo, infrarrojo medio, verde…) solo cuando hacen falta
+// Elevación: no depende de la fecha, se guarda por área y se reutiliza en todas las imágenes
+const memoriaElev = new Map();
+async function obtenerElevacion(r) {
+  const key = claveAoi() + '|elev|' + r.N;
+  let elev = memoriaElev.get(key) || await dbGet('nubes', key);
+  if (!elev) {
+    elev = await pedir({tipo: 'elevacion', G: gw(r.G)});
+    if (!elev) throw new Error('no hay datos de elevación para esta zona');
+    if (r.N <= MAX_PX_MEMORIA) dbPut('nubes', key, elev);
+  }
+  memoriaElev.set(key, elev); while (memoriaElev.size > 3) memoriaElev.delete(memoriaElev.keys().next().value);
+  let s = 0, n = 0; for (let i = 0; i < elev.length; i++) if (!isNaN(elev[i])) { s += elev[i]; n++; }
+  const media = n ? s / n : 0, elevrel = new Float32Array(elev.length);
+  for (let i = 0; i < elev.length; i++) elevrel[i] = elev[i] - media;
+  return {elev, elevrel};
+}
 async function asegurarBandas(r, nombres) {
+  if (nombres.includes('elev') && !r.b.elev) Object.assign(r.b, await obtenerElevacion(r));
   const faltan = [...new Set(nombres)].filter(n => !r.b[n]);
   if (!faltan.length) return;
   let out;
@@ -753,12 +795,16 @@ if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.se
 // ---------- Vistas e índices ----------
 const PAL_HUM = ['#8c510a', '#bf812d', '#dfc27d', '#f6e8c3', '#c7eae5', '#80cdc1', '#35978f', '#01665e'];
 const PAL_DIF = ['#b2182b', '#d6604d', '#f4a582', '#fddbc7', '#f7f7f7', '#d9f0d3', '#a6dba0', '#5aae61', '#1b7837'];
+const PAL_ELEV = ['#2c7bb6', '#00a6ca', '#00ccbc', '#90eb9d', '#ffff8c', '#f9d057', '#f29e2e', '#e76818', '#d7191c'];
+const PAL_REL = ['#2166ac', '#4393c3', '#92c5de', '#d1e5f0', '#f7f7f7', '#f6e8c3', '#dfc27d', '#bf812d', '#8c510a'];
 const nd = (a, c) => (a + c) !== 0 ? (a - c) / (a + c) : NaN;
 const VISTAS = {
   rgb: {nombre: 'Color real', archivo: 'Color_real'},
   ndvi: {nombre: 'NDVI', archivo: 'NDVI', bandas: [], indice: (b, i) => nd(b.nir[i], b.red[i]), rango: [0, 0.9], paleta: PALETA},
   ndre: {nombre: 'NDRE', archivo: 'NDRE', bandas: ['nir08', 'rededge1'], indice: (b, i) => nd(b.nir08[i], b.rededge1[i]), rango: [0, 0.6], paleta: PALETA},
   ndmi: {nombre: 'Humedad (NDMI)', archivo: 'Humedad_NDMI', bandas: ['nir08', 'swir16'], indice: (b, i) => nd(b.nir08[i], b.swir16[i]), rango: [-0.2, 0.5], paleta: PAL_HUM},
+  elev: {nombre: 'Elevación (m)', archivo: 'Elevacion', bandas: ['elev'], indice: (b, i) => b.elev[i], rango: [0, 100], paleta: PAL_ELEV, auto: true, terreno: true},
+  elevrel: {nombre: 'Elevación relativa (m)', archivo: 'Elevacion_relativa', bandas: ['elev'], indice: (b, i) => b.elevrel[i], rango: [-2, 2], paleta: PAL_REL, auto: true, simetrico: true, terreno: true},
 };
 Object.assign(S, {capas: [], capaB: null, comp: null, jpgP: null, contraste: store.get('contraste') === true, puntos: store.get('puntos') || [], rec: null});
 $('#auto').checked = S.contraste;
@@ -777,7 +823,8 @@ function colorPal(pal, t) {
 function valores(r, v) {
   if (r.val[v]) return r.val[v];
   const f = VISTAS[v].indice, out = new Float32Array(r.N).fill(NaN);
-  for (let i = 0; i < r.N; i++) if (r.lleno[i] && r.G.mask[i] && !NUBE_SCL.has(r.scl[i])) out[i] = f(r.b, i);
+  const terreno = VISTAS[v].terreno;
+  for (let i = 0; i < r.N; i++) if (r.G.mask[i] && (terreno || (r.lleno[i] && !NUBE_SCL.has(r.scl[i])))) out[i] = f(r.b, i);
   return r.val[v] = out;
 }
 function cuantiles(vals) { if (ArrayBuffer.isView(vals)) vals.sort(); else vals.sort((a, b) => a - b); return p => vals[Math.min(vals.length - 1, Math.floor(p * vals.length))]; }
@@ -795,10 +842,11 @@ function estadisticas(r, v) {
 // Rango de colores: fijo, o del lote (percentiles 2 y 98); al comparar, común a las dos fechas
 function rangoDe(r, v) {
   const V = VISTAS[v];
-  if (!S.contraste) return V.rango;
+  if (!S.contraste && !V.auto) return V.rango;
   let lo = Infinity, hi = -Infinity;
   const rs = S.comp && S.comp.r && (r === S.res || r === S.comp.r) ? [S.res, S.comp.r] : [r];
   for (const x of rs) { const e = estadisticas(x, v); if (e) { lo = Math.min(lo, e.p2); hi = Math.max(hi, e.p98); } }
+  if (isFinite(lo) && V.simetrico) { const m = Math.max(0.1, Math.abs(lo), Math.abs(hi)); return [-m, m]; }
   return isFinite(lo) && hi - lo >= 0.02 ? [lo, hi] : V.rango;
 }
 function lienzo(r, v) {
@@ -808,7 +856,7 @@ function lienzo(r, v) {
   const ctx = cv.getContext('2d'), img = ctx.createImageData(G.nx, G.ny), d = img.data;
   const vals = V.indice ? valores(r, v) : null;
   for (let i = 0; i < N; i++) {
-    if (!G.mask[i] || !r.lleno[i]) continue;
+    if (!G.mask[i] || (!r.lleno[i] && !V.terreno)) continue;
     let c;
     if (v === 'rgb') c = [r.rgb[i * 3], r.rgb[i * 3 + 1], r.rgb[i * 3 + 2]];
     else c = isNaN(vals[i]) ? [150, 150, 150] : colorPal(V.paleta, (vals[i] - rango[0]) / (rango[1] - rango[0]));
@@ -884,7 +932,7 @@ function leyenda() {
   const el = $('#leyenda'), comp = S.comp && S.comp.r ? S.comp : null;
   let pal, lo, hi, tit, f = fmt;
   if (comp && comp.modo === 'dif') { pal = PAL_DIF; [lo, hi] = rangoDif(); tit = 'Cambio de ' + VISTAS[vistaIndice()].nombre + ' (rojo bajó, verde subió)'; f = signo; }
-  else if (VISTAS[S.vista].indice) { pal = VISTAS[S.vista].paleta; [lo, hi] = rangoDe(S.res, S.vista); tit = VISTAS[S.vista].nombre + (S.contraste ? ' · contraste automático' : ''); }
+  else if (VISTAS[S.vista].indice) { pal = VISTAS[S.vista].paleta; [lo, hi] = rangoDe(S.res, S.vista); tit = VISTAS[S.vista].nombre + (S.contraste && !VISTAS[S.vista].auto ? ' · contraste automático' : ''); if (VISTAS[S.vista].simetrico) { f = signo; tit += ' · azul más bajo, marrón más alto que el promedio'; } }
   else { el.style.display = 'none'; return; }
   el.style.display = 'block';
   el.innerHTML = `<div class="muted">${tit}</div><div class="barra" style="background:linear-gradient(90deg,${pal.join(',')})"></div><div class="ejes"><span>${f(lo)}</span><span>${f((lo + hi) / 2)}</span><span>${f(hi)}</span></div>`;
@@ -1027,7 +1075,7 @@ map.on('click', e => {
   if (S.comp && S.comp.r) {
     const [ant, pos] = ordenados(), a = valores(ant, vd)[i], c = valores(pos, vd)[i];
     txt = `${nom}<br>${fechaLarga(ant.grupo.fecha)}: <b>${fmtV(a)}</b><br>${fechaLarga(pos.grupo.fecha)}: <b>${fmtV(c)}</b>` + (!isNaN(a) && !isNaN(c) ? `<br>Cambio: <b>${signo(c - a)}</b>` : '');
-  } else txt = NUBE_SCL.has(r.scl[i]) ? 'Nube o sombra' : `${nom} <b>${fmtV(valores(r, vd)[i])}</b>`;
+  } else txt = NUBE_SCL.has(r.scl[i]) && !VISTAS[vd].terreno ? 'Nube o sombra' : `${nom} <b>${fmtV(valores(r, vd)[i])}</b>`;
   L.popup({closeButton: false, autoClose: true}).setLatLng(e.latlng).setContent(`${txt}<br><span style="color:#888">${e.latlng.lat.toFixed(5)}, ${e.latlng.lng.toFixed(5)}</span>`).openOn(map);
 });
 
@@ -1067,7 +1115,7 @@ function iniciarRec() {
     const R = S.rec; if (!R) return;
     const ll = [p.coords.latitude, p.coords.longitude], acc = p.coords.accuracy; R.pos = ll;
     if (!R.marca) {
-      R.circ = L.circle(ll, {radius: acc, color: '#1e88e5', weight: 1, fillOpacity: .12, interactive: false}).addTo(map);
+      R.circ = L.circle(ll, {radius: acc, color: '#1e88e5', weight: 1.5, fill: false, interactive: false}).addTo(map);
       R.marca = L.marker(ll, {icon: L.divIcon({className: '', html: '<div class="dot"></div>', iconSize: [16, 16], iconAnchor: [8, 8]}), interactive: false}).addTo(map);
     } else { R.marca.setLatLng(ll); R.circ.setLatLng(ll).setRadius(acc); }
     if (R.primera) { map.setView(ll, Math.max(map.getZoom(), 16)); R.primera = false; }
@@ -1122,6 +1170,7 @@ function componerJpg() {
     if (V.indice) { pal = V.paleta; rango = rangoDe(r, v); }
   } else {
     imgs = [{cv: lienzo(r, v)}]; titulo = V.nombre; sub = `${fechaLarga(S.sel.fecha)} · ${S.sel.sat}`; nombre = V.archivo + '_' + S.sel.fecha.slice(0, 10);
+    if (V.simetrico) f = signo;
     if (V.indice) { pal = V.paleta; rango = rangoDe(r, v); const e = estadisticas(r, v); if (e) linea = `${V.nombre} promedio ${fmt(e.media)} · mediana ${fmt(e.p50)} · nubes ${fmt(r.nubePct, 0)}%`; }
   }
   sub += ' · ' + $('#aoiInfo').textContent;
@@ -1166,7 +1215,7 @@ function componerJpg() {
   }
   if (linea) { x.fillStyle = '#222'; x.font = `16px ${fuente}`; x.fillText(linea, W / 2, y); y += 26; }
   x.font = `13px ${fuente}`; x.fillStyle = '#777';
-  x.fillText('Contiene datos modificados de Copernicus Sentinel ' + S.sel.fecha.slice(0, 4) + ' · Sentinel-2 L2A, 10 m', W / 2, Math.min(H - 12, y + 10));
+  x.fillText(V.terreno ? 'Elevación: GEDTM30 v1.2, OpenGeoHub (CC BY 4.0), 30 m' : 'Contiene datos modificados de Copernicus Sentinel ' + S.sel.fecha.slice(0, 4) + ' · Sentinel-2 L2A, 10 m', W / 2, Math.min(H - 12, y + 10));
   return new Promise(res => cv.toBlob(bl => res(new File([bl], nombre + '.jpg', {type: 'image/jpeg'})), 'image/jpeg', 0.92));
 }
 function prepararJpg() { if (S.res && !S.jpgP) S.jpgP = componerJpg(); return S.jpgP; }
@@ -1225,7 +1274,7 @@ function pintarMediciones() {
   S.mediciones.forEach((m, k) => {
     if (m.tipo === 'zona') m.ind = indiceEnZona(m.geom);
     const nombre = (m.tipo === 'linea' ? 'Distancia ' : 'Zona ') + (k + 1);
-    const capa = L.geoJSON(m.geom, {style: {color: '#00e5ff', weight: 3, fillOpacity: .15, dashArray: m.tipo === 'linea' ? '6 6' : null}});
+    const capa = L.geoJSON(m.geom, {style: {color: '#00e5ff', weight: 3, fill: false, dashArray: m.tipo === 'linea' ? '6 6' : null}});
     capa.bindTooltip(m.tipo === 'linea' ? fmtDist(m.largo) : fmtSup(m.ha), {permanent: true, direction: 'center', className: 'tipmed'});
     capa.bindPopup(`<b>${nombre}</b><br>${textoMed(m)}`);
     capaMed.addLayer(capa);
@@ -1246,7 +1295,7 @@ function iniciarMedicion(tipo) {
   setModo(null);
   if (map.pm.globalDrawModeEnabled()) map.pm.disableDraw();
   S.midiendo = tipo;
-  map.pm.enableDraw(tipo === 'linea' ? 'Line' : 'Polygon', {snappable: false, templineStyle: {color: '#00e5ff'}, hintlineStyle: {color: '#00e5ff', dashArray: [5, 5]}, pathOptions: {color: '#00e5ff'}});
+  map.pm.enableDraw(tipo === 'linea' ? 'Line' : 'Polygon', {snappable: false, templineStyle: {color: '#00e5ff'}, hintlineStyle: {color: '#00e5ff', dashArray: [5, 5]}, pathOptions: {color: '#00e5ff', fill: false}});
   $('#medTxt').innerHTML = tipo === 'linea' ? 'Tocá el mapa para marcar los puntos.' : 'Tocá el mapa para marcar los vértices de la zona.';
   $('#medPill').style.display = 'flex';
   minimizar(true);
