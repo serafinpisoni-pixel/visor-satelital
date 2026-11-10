@@ -120,10 +120,6 @@
       <label for="radio">Radio alrededor del punto (m)</label>
       <input id="radio" type="number" inputmode="numeric" value="650" min="50" max="15000" step="50">
     </div>
-    <div class="row">
-      <input id="coords" type="text" placeholder="-34.3000, -60.5252  o link de Google Maps" autocomplete="off">
-      <button id="bIr">Ir</button>
-    </div>
     <div class="muted" id="aoiInfo">Elegí un área: tu ubicación, un punto, un polígono dibujado o un archivo KML / KMZ / GeoJSON / shapefile en .zip.</div>
   </section>
 
@@ -315,32 +311,6 @@ map.on('pm:create', e => {
   setAOI(g, 'Polígono dibujado', false);
 });
 $('#radio').onchange = () => { if (S.centro) setCentro(S.centro[0], S.centro[1], 'Punto'); };
-
-// Coordenadas o links
-function dmsADec(txt) {
-  const re = /(\d+(?:\.\d+)?)\s*°\s*(\d+(?:\.\d+)?)?\s*['’′]?\s*(\d+(?:\.\d+)?)?\s*["”″]?\s*([NSEWO])/gi;
-  const out = []; let m;
-  while ((m = re.exec(txt))) { let v = +m[1] + (+m[2] || 0) / 60 + (+m[3] || 0) / 3600; if (/[SWO]/i.test(m[4])) v = -v; out.push({v, eje: /[NS]/i.test(m[4]) ? 'lat' : 'lon'}); }
-  if (out.length === 2) { const lat = out.find(o => o.eje === 'lat'), lon = out.find(o => o.eje === 'lon'); if (lat && lon) return [lat.v, lon.v]; }
-  return null;
-}
-function parseCoords(txt) {
-  txt = decodeURIComponent(txt.trim());
-  if (/goo\.gl|maps\.app/.test(txt)) return 'corto';
-  let m = txt.match(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/) || txt.match(/[?&](?:q|query|ll|center)=(-?\d+\.\d+),\s*(-?\d+\.\d+)/) || txt.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
-  if (m) return [+m[1], +m[2]];
-  const d = dmsADec(txt); if (d) return d;
-  m = txt.match(/(-?\d+(?:[.,]\d+)?)\s*[,;\s]\s*(-?\d+(?:[.,]\d+)?)/);
-  if (m) { const a = +m[1].replace(',', '.'), b = +m[2].replace(',', '.'); if (Math.abs(a) <= 90 && Math.abs(b) <= 180) return [a, b]; }
-  return null;
-}
-$('#bIr').onclick = () => {
-  const c = parseCoords($('#coords').value);
-  if (c === 'corto') { toast('Los links cortos (maps.app.goo.gl) no se pueden leer desde acá. Abrilo en Google Maps y copiá las coordenadas que aparecen al mantener apretado el punto.', 7000); return; }
-  if (!c) { toast('No reconocí las coordenadas. Ejemplo: -34.3000, -60.5252'); return; }
-  setModo(null); setCentro(c[0], c[1], 'Punto');
-};
-$('#coords').addEventListener('keydown', e => { if (e.key === 'Enter') $('#bIr').click(); });
 
 // Archivos
 function poligonosDe(gj) {
