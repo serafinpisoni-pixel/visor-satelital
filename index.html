@@ -1138,9 +1138,20 @@ function gpsActualizar(p) {
     gps.primera = false;
     if (S.aoi) { const [w, s, e, n] = bboxDe(S.aoi); if (distM(ll, [(s + n) / 2, (w + e) / 2]) > 3000) setSeguir(false); }
     if (gps.seguir) map.setView(ll, Math.max(map.getZoom(), 16));
-  } else if (gps.seguir) { if (gps.centrar) { map.setView(ll, Math.max(map.getZoom(), 16)); gps.centrar = false; } else map.panTo(ll); }
+  } else if (gps.seguir && mapaQuieto()) {
+    if (gps.centrar) { map.setView(ll, Math.max(map.getZoom(), 16)); gps.centrar = false; }
+    else { const p = map.latLngToContainerPoint(ll), c = map.getSize().divideBy(2); if (p.distanceTo(c) > 12) map.panTo(ll, {duration: 0.5}); }
+  }
   pintarRumbo();
 }
+// El seguimiento no mueve el mapa mientras lo estás tocando (zoom con dos dedos, giro) ni durante un zoom:
+// mover el mapa en medio de un gesto es lo que lo traba y desacomoda la imagen
+const mapaEl = map.getContainer(); let dedos = 0, tToque = 0;
+['touchstart', 'touchend', 'touchcancel'].forEach(ev => mapaEl.addEventListener(ev, e => { dedos = e.touches.length; tToque = Date.now(); }, {passive: true}));
+const mapaQuieto = () => dedos === 0 && Date.now() - tToque > 1000 && !map._animatingZoom;
+// Al terminar cualquier zoom, movimiento o giro, la imagen se vuelve a ubicar exacto sobre el mapa
+const realinear = () => S.capas.forEach(c => { if (c._map && c._reset) c._reset(); });
+map.on('zoomend moveend rotateend', realinear);
 function gpsIniciar() {
   if (gps.id != null || !navigator.geolocation) return;
   gps.id = navigator.geolocation.watchPosition(gpsActualizar, err => {
