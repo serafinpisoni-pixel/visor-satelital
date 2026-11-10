@@ -8,7 +8,8 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Visor satelital">
 <meta name="theme-color" content="#1f3d2b">
-<link rel="apple-touch-icon" id="icono">
+<link rel="apple-touch-icon" href="icon.png">
+<link rel="icon" type="image/png" href="icon.png">
 <title>Visor satelital · Sentinel-2</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <link rel="stylesheet" href="https://unpkg.com/@geoman-io/leaflet-geoman-free@2.17.0/dist/leaflet-geoman.css">
@@ -1359,16 +1360,6 @@ function minimizar(m) { $('#sheet').classList.toggle('min', m); $('#grabTxt').te
   grab.addEventListener('pointerup', soltar);
   grab.addEventListener('pointercancel', soltar);
   grab.addEventListener('click', () => { if (movio) { movio = false; return; } minimizar(!sheet.classList.contains('min')); });
-})();
-
-// Ícono para «Agregar a inicio» (se dibuja acá para no depender de archivos aparte)
-(function () {
-  const c = document.createElement('canvas'); c.width = c.height = 180; const x = c.getContext('2d');
-  x.fillStyle = '#1f3d2b'; x.fillRect(0, 0, 180, 180);
-  const celdas = [[0, 0, .55, .45, '#1a9850'], [.55, 0, 1, .45, '#a6d96a'], [0, .45, .35, 1, '#fdae61'], [.35, .45, .75, 1, '#66bd63'], [.75, .45, 1, 1, '#f46d43']];
-  for (const [a, b, cc, d, col] of celdas) { x.fillStyle = col; x.fillRect(40 + a * 100 + 2, 40 + b * 100 + 2, (cc - a) * 100 - 4, (d - b) * 100 - 4); }
-  x.strokeStyle = '#fff'; x.lineWidth = 5; x.strokeRect(32, 32, 116, 116);
-  try { document.getElementById('icono').href = c.toDataURL('image/png'); } catch (e) {}
 })();
 
 // Restaurar última área
