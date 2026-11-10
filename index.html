@@ -261,7 +261,7 @@ function setAOI(geom, etiqueta, ajustar = true) {
   if (ajustar) map.fitBounds(S.aoiLayer.getBounds(), {padding: [30, 30], maxZoom: 16});
   $('#aoiInfo').innerHTML = `<b>${etiqueta}</b> · ${fmt0(ha)} ha`;
   $('#bBuscar').disabled = false; $('#bUltima').disabled = false;
-  limpiarResultado(); S.grupos = []; $('#lista').innerHTML = '';
+  const anterior = S.res; limpiarResultado(); liberar(anterior); soltarMemoria(); S.grupos = []; $('#lista').innerHTML = '';
   store.set('aoi', {geom, etiqueta});
 }
 function setCentro(lat, lon, etiqueta) {
@@ -526,9 +526,9 @@ function codigoWorker() {
   function abrir(href) {
     href = httpsHref(href);
     if (!tiffs.has(href)) {
-      tiffs.set(href, GeoTIFF.fromUrl(href).catch(e => { tiffs.delete(href); throw e; }));
-      if (tiffs.size > 80) tiffs.delete(tiffs.keys().next().value);
-    }
+      tiffs.set(href, GeoTIFF.fromUrl(href, {cacheSize: 24}).catch(e => { tiffs.delete(href); throw e; }));
+      while (tiffs.size > 16) tiffs.delete(tiffs.keys().next().value);
+    } else { const t = tiffs.get(href); tiffs.delete(href); tiffs.set(href, t); }
     return tiffs.get(href);
   }
   async function leerVentana(href, caja, resObj) {
@@ -691,6 +691,7 @@ function codigoWorker() {
       if (m.tipo === 'procesar') r = await procesar(m);
       else if (m.tipo === 'bandas') r = await bandas(m);
       else if (m.tipo === 'elevacion') r = await elevacion(m);
+      else if (m.tipo === 'limpiar') { tiffs.clear(); memo.clear(); r = {out: true}; }
       else if (m.tipo === 'registrar') { guardarMemo(m.id, {G: m.G, items: m.items, cajas: m.items.map(it => cajaDe(m.G, it)), fuente: m.fuente, PX: m.PX, PY: m.PY}); r = {out: true}; }
       self.postMessage({id: m.rid, ok: true, out: r.out}, r.transfer || []);
     } catch (err) { self.postMessage({id: m.rid, ok: false, error: String((err && err.message) || err)}); }
@@ -704,14 +705,31 @@ function crearWorker() {
   worker.onmessage = e => { const {id, ok, out, error} = e.data, p = pendientes.get(id); if (!p) return; pendientes.delete(id); ok ? p.res(out) : p.rej(new Error(error)); };
   worker.onerror = e => {
     console.error('worker', e.message);
-    const err = new Error('Falló el procesamiento en segundo plano (' + (e.message || 'sin detalle') + '). Revisá la conexión.');
-    for (const p of pendientes.values()) p.rej(err);
-    pendientes.clear(); try { worker.terminate(); } catch (x) {} worker = null;
+    reiniciarWorker('Falló el procesamiento en segundo plano (' + (e.message || 'sin detalle') + '). Revisá la conexión.');
   };
+}
+const ESPERA_MAX = 120000;
+function reiniciarWorker(motivo) {
+  const err = new Error(motivo);
+  for (const p of pendientes.values()) { clearTimeout(p.t); p.rej(err); }
+  pendientes.clear(); try { worker && worker.terminate(); } catch (x) {} worker = null;
 }
 function pedir(msg) {
   if (!worker) crearWorker();
-  return new Promise((res, rej) => { const rid = ++ridSeq; pendientes.set(rid, {res, rej}); worker.postMessage(Object.assign({rid}, msg)); });
+  return new Promise((res, rej) => {
+    const rid = ++ridSeq;
+    const t = setTimeout(() => reiniciarWorker('El procesamiento se trabó (conexión lenta o falta de memoria). Probá de nuevo.'), ESPERA_MAX);
+    pendientes.set(rid, {res: x => { clearTimeout(t); res(x); }, rej: e => { clearTimeout(t); rej(e); }, t});
+    worker.postMessage(Object.assign({rid}, msg));
+  });
+}
+// Libera la memoria de los dibujos de un resultado (en el iPhone los lienzos viejos no se liberan solos)
+function liberar(r) { if (!r || !r.cv) return; for (const k in r.cv) { r.cv[k].width = r.cv[k].height = 0; } r.cv = {}; }
+// Al cambiar de área: se suelta todo lo de la consulta anterior
+function soltarMemoria() {
+  for (const r of memoria.values()) if (r !== S.res) liberar(r);
+  memoria.clear(); memoriaElev.clear();
+  if (worker) pedir({tipo: 'limpiar'}).catch(() => {});
 }
 
 // ---------- Memoria de lo ya bajado (en el teléfono) ----------
@@ -737,7 +755,7 @@ function hashStr(s) { let h = 2166136261; for (let i = 0; i < s.length; i++) { h
 const claveAoi = () => hashStr(JSON.stringify(S.aoi));
 const claveGrupo = g => g.fecha.slice(0, 19) + '|' + g.sat;
 const memoria = new Map();
-function recordar(key, r) { memoria.delete(key); memoria.set(key, r); while (memoria.size > 4) memoria.delete(memoria.keys().next().value); }
+function recordar(key, r) { memoria.delete(key); memoria.set(key, r); while (memoria.size > 4) { const k = memoria.keys().next().value, v = memoria.get(k); memoria.delete(k); if (v !== S.res && !(S.comp && v === S.comp.r)) liberar(v); } }
 const MAX_PX_MEMORIA = 1200000;
 async function guardarRes(r) {
   if (r.N > MAX_PX_MEMORIA) return;
@@ -885,6 +903,7 @@ function rangoDe(r, v) {
 function lienzo(r, v) {
   const V = VISTAS[v], rango = V.indice ? rangoDe(r, v) : null, key = v + (rango ? rango.map(x => x.toFixed(4)).join(',') : '');
   if (r.cv[key]) return r.cv[key];
+  liberar(r);
   const {G, N} = r, cv = document.createElement('canvas'); cv.width = G.nx; cv.height = G.ny;
   const ctx = cv.getContext('2d'), img = ctx.createImageData(G.nx, G.ny), d = img.data;
   const vals = V.indice ? valores(r, v) : null;
