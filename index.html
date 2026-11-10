@@ -416,7 +416,7 @@ async function resolver(g) {
     g.mejor = mejor || g.cands[0];
   }
   const m = g.mejor;
-  if (m !== g) { g.items = m.items; g.sat = m.sat; g.fecha = m.fecha; if (m.nubeArea != null) { g.nubeArea = m.nubeArea; g.cob = m.cob; } }
+  if (m !== g) { g.items = m.items; g.sat = m.sat; g.fecha = m.fecha; g.nubeEsc = m.nubeEsc; if (m.nubeArea != null) { g.nubeArea = m.nubeArea; g.cob = m.cob; } }
   return m;
 }
 function pintarLista() {
