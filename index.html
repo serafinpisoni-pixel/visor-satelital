@@ -158,7 +158,7 @@
   <section>
     <h3>4 · Recorrida</h3>
     <div class="row"><button id="bRec">🧭 Iniciar recorrida</button><button id="bKml" disabled>⬇️ Exportar puntos (KML)</button></div>
-    <div class="muted">Tu posición se ve siempre en el mapa (punto azul). Con la flecha de arriba a la derecha la pantalla te va siguiendo; si movés el mapa con el dedo, deja de seguirte. La recorrida además muestra el NDVI donde estás parado y deja la pantalla prendida. Para marcar un punto, tocá «📌 Marcar acá» o mantené apretado el mapa.</div>
+    <div class="muted">Tu posición se ve siempre en el mapa (punto azul). Con la flecha de arriba a la derecha la pantalla te va siguiendo; si movés el mapa con el dedo, deja de seguirte. Para girar el mapa usá dos dedos; la brújula que aparece arriba a la derecha lo vuelve al norte. La recorrida además muestra el NDVI donde estás parado y deja la pantalla prendida. Para marcar un punto, tocá «📌 Marcar acá» o mantené apretado el mapa.</div>
     <div id="listaPuntos"></div>
   </section>
 
@@ -182,6 +182,7 @@
 <div id="modal"><img id="modalImg" alt=""><p>Mantené apretada la imagen y elegí «Guardar en Fotos».</p><button id="bCerrar">Cerrar</button></div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-rotate@0.5.4/dist/leaflet-rotate.js"></script>
 <script src="https://unpkg.com/@geoman-io/leaflet-geoman-free@2.17.0/dist/leaflet-geoman.min.js"></script>
 <script>
 'use strict';
@@ -217,13 +218,15 @@ function colorNdvi(v) {
 }
 
 // ---------- Mapa ----------
-const map = L.map('map', {zoomControl: false, attributionControl: true}).setView([-34.3, -60.52], 12);
+const map = L.map('map', {zoomControl: false, attributionControl: true, rotate: true, touchRotate: true, shiftKeyRotate: true, pitchDrag: false, rotateControl: false}).setView([-34.3, -60.52], 12);
 L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {maxZoom: 19, attribution: 'Esri, Maxar, Earthstar'}).addTo(map);
 L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', {maxZoom: 19, opacity: .8}).addTo(map);
 L.control.zoom({position: 'topright'}).addTo(map);
 // Botón «seguirme» (debajo del zoom)
 L.Control.Yo = L.Control.extend({options: {position: 'topright'}, onAdd() { const d = L.DomUtil.create('div', 'leaflet-bar'); d.innerHTML = '<a href="#" id="bYo" role="button" title="Seguir mi ubicación"><svg width="18" height="18" viewBox="0 0 24 24"><path d="M21 3 3 10.5l7.2 2.3L12.5 20z" fill="currentColor"/></svg></a>'; L.DomEvent.disableClickPropagation(d); return d; }});
 new L.Control.Yo().addTo(map);
+// Brújula: aparece cuando el mapa está rotado (girando con dos dedos); tocarla lo vuelve al norte
+L.control.rotate({position: 'topright', closeOnZeroBearing: true, visualizePitch: false}).addTo(map);
 map.pm.setLang('es');
 
 const S = { aoi: null, aoiLayer: null, centro: null, centroLayer: null, modo: null, grupos: [], sel: null, res: null, overlay: null, vista: 'rgb', jpg: {} };
