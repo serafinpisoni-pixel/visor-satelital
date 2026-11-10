@@ -88,6 +88,11 @@
   .punto-lista{display:flex;justify-content:space-between;align-items:center;font-size:13px;border-bottom:1px solid var(--borde);padding:6px 0;gap:8px}
   .punto-lista button{padding:4px 9px}
   .dot{width:16px;height:16px;border-radius:50%;background:#1e88e5;border:3px solid #fff;box-shadow:0 0 6px rgba(0,0,0,.5)}
+  #medPill{position:fixed;top:calc(env(safe-area-inset-top) + 90px);right:10px;z-index:900;display:none;flex-direction:column;align-items:flex-end;gap:6px;max-width:72vw}
+  #medPill .pill{background:rgba(255,255,255,.96);border-radius:12px;padding:8px 10px;font-size:14px;box-shadow:0 2px 8px rgba(0,0,0,.3)}
+  #medPill button{box-shadow:0 2px 8px rgba(0,0,0,.3);background:#fff}
+  .tipmed{background:rgba(0,0,0,.75);color:#fff;border:0;border-radius:6px;font-weight:600;box-shadow:none;padding:2px 6px}
+  .tipmed:before{display:none}
 </style>
 </head>
 <body>
@@ -152,6 +157,13 @@
     <div id="listaPuntos"></div>
   </section>
 
+  <section>
+    <h3>5 · Medir</h3>
+    <div class="row"><button id="bMedDist">📏 Distancia</button><button id="bMedSup">📐 Superficie</button></div>
+    <div class="muted">Tocá el mapa para marcar los puntos y después «Terminar». La superficie da hectáreas, perímetro y, si hay una imagen cargada, el índice promedio de esa zona. Con «Usar como área» la zona pasa a ser el área para buscar imágenes.</div>
+    <div id="listaMed"></div>
+  </section>
+
   <div class="foot">
     Imágenes: Copernicus Sentinel-2 (ESA), nivel L2A colección 1, vía <a href="https://registry.opendata.aws/sentinel-2-l2a-cogs/" target="_blank" rel="noopener">AWS Open Data</a> y Earth Search de Element 84. Contiene datos modificados de Copernicus Sentinel. Mapa base: Esri World Imagery. Resolución 10 m.
   </div>
@@ -159,6 +171,7 @@
 
 <div id="busy"><div><i></i><span id="busyTxt">Cargando…</span></div></div>
 <div id="toast"></div>
+<div id="medPill"><div class="pill" id="medTxt"></div><div class="row" style="margin:0"><button id="bMedTerminar">✔ Terminar</button><button id="bMedCancelar">✖ Cancelar</button></div></div>
 <div id="rec"><div class="pill" id="recInfo">Buscando señal de GPS…</div><div class="row" style="margin:0"><button id="bMarcar">📌 Marcar acá</button><button id="bCentrar">🎯 Centrar</button></div></div>
 <div id="linea"></div><div id="etqA" class="etq"></div><div id="etqB" class="etq"></div>
 <div id="modal"><img id="modalImg" alt=""><p>Mantené apretada la imagen y elegí «Guardar en Fotos».</p><button id="bCerrar">Cerrar</button></div>
@@ -285,11 +298,12 @@ $('#bLoc').onclick = () => {
 $('#bPunto').onclick = () => setModo(S.modo === 'punto' ? null : 'punto');
 $('#bDraw').onclick = () => {
   if (S.modo === 'dibujo') { setModo(null); return; }
-  setModo('dibujo');
+  setModo('dibujo'); if (S.midiendo) cancelarMedicion();
   map.pm.enableDraw('Polygon', {snappable: false, templineStyle: {color: '#ffeb3b'}, hintlineStyle: {color: '#ffeb3b', dashArray: [5, 5]}, pathOptions: {color: '#ffeb3b'}});
   minimizar(true);
 };
 map.on('pm:create', e => {
+  if (S.midiendo) return;
   const g = e.layer.toGeoJSON().geometry; map.removeLayer(e.layer);
   setModo(null); quitarCentro(); minimizar(false);
   setAOI(g, 'Polígono dibujado', false);
@@ -973,6 +987,114 @@ function componerJpg() {
 function prepararJpg() { if (S.res && !S.jpgP) S.jpgP = componerJpg(); return S.jpgP; }
 $('#bJpg').onclick = async () => { if (!S.res) return; compartir(await prepararJpg()); };
 $('#bCerrar').onclick = () => $('#modal').style.display = 'none';
+
+// ---------- Medir distancias y superficies ----------
+const capaMed = L.featureGroup().addTo(map);
+S.mediciones = []; S.midiendo = null;
+const fmtDist = m => m < 1000 ? `${fmt0(m)} m` : `${fmt(m / 1000)} km`;
+const fmtSup = ha => ha < 1 ? `${fmt(ha)} ha (${fmt0(ha * 10000)} m²)` : `${fmt(ha, ha < 10 ? 2 : 1)} ha`;
+function largo(coords) {
+  let d = 0;
+  for (let i = 1; i < coords.length; i++) {
+    const [lo1, la1] = coords[i - 1], [lo2, la2] = coords[i];
+    const p1 = la1 * Math.PI / 180, p2 = la2 * Math.PI / 180, dp = p2 - p1, dl = (lo2 - lo1) * Math.PI / 180;
+    const a = Math.sin(dp / 2) ** 2 + Math.cos(p1) * Math.cos(p2) * Math.sin(dl / 2) ** 2;
+    d += 2 * 6371008.8 * Math.asin(Math.sqrt(a));
+  }
+  return d;
+}
+// Índice promedio de una zona dibujada, sobre la imagen cargada
+function indiceEnZona(geom) {
+  const r = S.res; if (!r) return null;
+  const G = r.G, vd = vistaIndice(), vals = valores(r, vd), anillos = [];
+  for (const poly of anillosDe(geom)) for (const ring of poly) anillos.push(ring.map(([lo, la]) => [(mx(lo) - G.X0) / G.dX, (G.Y1 - my(la)) / G.dY]));
+  let s = 0, n = 0;
+  for (let f = 0; f < G.ny; f++) {
+    const yc = f + 0.5, xs = [];
+    for (const ring of anillos) for (let i = 0; i < ring.length - 1; i++) {
+      const [xa, ya] = ring[i], [xb, yb] = ring[i + 1];
+      if ((ya <= yc && yb > yc) || (yb <= yc && ya > yc)) xs.push(xa + (yc - ya) * (xb - xa) / (yb - ya));
+    }
+    xs.sort((a, b) => a - b);
+    for (let i = 0; i + 1 < xs.length; i += 2) {
+      const c0 = Math.max(0, Math.ceil(xs[i] - 0.5)), c1 = Math.min(G.nx - 1, Math.floor(xs[i + 1] - 0.5));
+      for (let c = c0; c <= c1; c++) { const k = f * G.nx + c; if (!isNaN(vals[k])) { s += vals[k]; n++; } }
+    }
+  }
+  if (!n) return null;
+  const pxHa = (G.dX * G.k) * (G.dY * G.k) / 10000;
+  return {nombre: VISTAS[vd].nombre, media: s / n, parcial: n * pxHa < 0.9 * areaHa(geom)};
+}
+function textoMed(m) {
+  if (m.tipo === 'linea') return `Distancia: <b>${fmtDist(m.largo)}</b>`;
+  let t = `Superficie: <b>${fmtSup(m.ha)}</b> · perímetro ${fmtDist(m.perim)}`;
+  if (m.ind) t += `<br>${m.ind.nombre} promedio: <b>${fmt(m.ind.media)}</b>${m.ind.parcial ? ' (parte de la zona sin dato)' : ''}`;
+  return t;
+}
+function medirGeom(tipo, geom) {
+  if (tipo === 'linea') return {tipo, geom, largo: largo(geom.coordinates)};
+  return {tipo, geom, ha: areaHa(geom), perim: largo(geom.coordinates[0])};
+}
+function pintarMediciones() {
+  capaMed.clearLayers();
+  S.mediciones.forEach((m, k) => {
+    if (m.tipo === 'zona') m.ind = indiceEnZona(m.geom);
+    const nombre = (m.tipo === 'linea' ? 'Distancia ' : 'Zona ') + (k + 1);
+    const capa = L.geoJSON(m.geom, {style: {color: '#00e5ff', weight: 3, fillOpacity: .15, dashArray: m.tipo === 'linea' ? '6 6' : null}});
+    capa.bindTooltip(m.tipo === 'linea' ? fmtDist(m.largo) : fmtSup(m.ha), {permanent: true, direction: 'center', className: 'tipmed'});
+    capa.bindPopup(`<b>${nombre}</b><br>${textoMed(m)}`);
+    capaMed.addLayer(capa);
+  });
+  $('#listaMed').innerHTML = S.mediciones.map((m, k) => `<div class="punto-lista"><span>${m.tipo === 'linea' ? '📏' : '📐'} ${textoMed(m)}</span><span style="display:flex;gap:4px;flex:none">${m.tipo === 'zona' ? `<button data-k="${k}" class="usarM">Usar como área</button>` : ''}<button data-k="${k}" class="borrarM">✕</button></span></div>`).join('')
+    + (S.mediciones.length ? '<div class="row"><button id="bBorrarMed">Borrar mediciones</button></div>' : '');
+  document.querySelectorAll('.borrarM').forEach(b => b.onclick = () => { S.mediciones.splice(+b.dataset.k, 1); pintarMediciones(); });
+  document.querySelectorAll('.usarM').forEach(b => b.onclick = () => { const m = S.mediciones[+b.dataset.k]; quitarCentro(); setAOI(m.geom, 'Zona medida'); });
+  const bb = $('#bBorrarMed'); if (bb) bb.onclick = () => { S.mediciones = []; pintarMediciones(); };
+}
+// Recalcular el índice de las zonas cuando cambia la imagen o la vista
+const mostrarBase = mostrar, limpiarBase = limpiarResultado;
+mostrar = function () { mostrarBase(); pintarMediciones(); };
+limpiarResultado = function () { limpiarBase(); pintarMediciones(); };
+
+function iniciarMedicion(tipo) {
+  if (S.midiendo) cancelarMedicion();
+  setModo(null);
+  if (map.pm.globalDrawModeEnabled()) map.pm.disableDraw();
+  S.midiendo = tipo;
+  map.pm.enableDraw(tipo === 'linea' ? 'Line' : 'Polygon', {snappable: false, templineStyle: {color: '#00e5ff'}, hintlineStyle: {color: '#00e5ff', dashArray: [5, 5]}, pathOptions: {color: '#00e5ff'}});
+  $('#medTxt').innerHTML = tipo === 'linea' ? 'Tocá el mapa para marcar los puntos.' : 'Tocá el mapa para marcar los vértices de la zona.';
+  $('#medPill').style.display = 'flex';
+  minimizar(true);
+}
+map.on('pm:drawstart', e => {
+  if (!S.midiendo || !e.workingLayer) return;
+  const wl = e.workingLayer;
+  wl.on('pm:vertexadded', () => {
+    const ll = wl.getLatLngs().map(p => [p.lng, p.lat]);
+    if (S.midiendo === 'linea') $('#medTxt').innerHTML = `Distancia: <b>${fmtDist(largo(ll))}</b>` + (ll.length > 2 ? ` · ${ll.length - 1} tramos` : '');
+    else if (ll.length >= 3) { const g = {type: 'Polygon', coordinates: [[...ll, ll[0]]]}; $('#medTxt').innerHTML = `Superficie: <b>${fmtSup(areaHa(g))}</b>`; }
+    else $('#medTxt').innerHTML = 'Seguí marcando vértices…';
+  });
+});
+map.on('pm:create', e => {
+  if (!S.midiendo) return;
+  const tipo = S.midiendo, g = e.layer.toGeoJSON().geometry; map.removeLayer(e.layer);
+  terminarMedicionUI();
+  S.mediciones.push(medirGeom(tipo, g)); pintarMediciones();
+  const m = S.mediciones[S.mediciones.length - 1];
+  toast(tipo === 'linea' ? 'Distancia: ' + fmtDist(m.largo) : 'Superficie: ' + fmtSup(m.ha), 5000);
+});
+function terminarMedicionUI() { S.midiendo = null; $('#medPill').style.display = 'none'; minimizar(false); }
+function cancelarMedicion() { if (map.pm.globalDrawModeEnabled()) map.pm.disableDraw(); terminarMedicionUI(); }
+$('#bMedTerminar').onclick = () => {
+  const d = S.midiendo === 'linea' ? map.pm.Draw.Line : map.pm.Draw.Polygon;
+  const n = d._layer ? d._layer.getLatLngs().length : 0;
+  if (n < (S.midiendo === 'linea' ? 2 : 3)) { toast(S.midiendo === 'linea' ? 'Marcá al menos dos puntos.' : 'Marcá al menos tres vértices.'); return; }
+  try { d._finishShape(); } catch (e) { console.error(e); cancelarMedicion(); }
+};
+$('#bMedCancelar').onclick = cancelarMedicion;
+$('#bMedDist').onclick = () => iniciarMedicion('linea');
+$('#bMedSup').onclick = () => iniciarMedicion('zona');
 
 // ---------- Panel ----------
 function minimizar(m) { $('#sheet').classList.toggle('min', m); $('#grabTxt').textContent = m ? 'Mostrar panel' : 'Ocultar panel'; }
