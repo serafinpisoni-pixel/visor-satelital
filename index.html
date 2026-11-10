@@ -135,7 +135,7 @@
     <div class="row"><label>Transparencia</label><input id="opac" type="range" min="0" max="100" value="100"></div>
     <div id="stats"></div>
     <div class="row"><button id="bJpg" class="primary">⬇️ Descargar JPG</button><button id="bComparar">🔀 Comparar con otra fecha</button></div>
-    <div class="muted">Tocá el mapa para ver el valor de un punto. NDRE: vigor cuando el cultivo ya cerró el surco. Humedad: agua en la vegetación (más azul, más húmedo). Elevación: terreno sin árboles ni edificios (30 m); la relativa muestra cuánto está cada punto por arriba o por abajo del terreno que lo rodea (750 m a la redonda), igual que el script de Earth Engine. Tiene un error de 1 a 2 m: sirve para lomas y bajos marcados.</div>
+    <div class="muted">Tocá el mapa para ver el valor de un punto. NDRE: vigor cuando el cultivo ya cerró el surco. Humedad: agua en la vegetación (más azul, más húmedo). Elevación: terreno sin árboles ni edificios (30 m); la relativa muestra cuánto está cada punto por arriba o por abajo del terreno que lo rodea (750 m a la redonda). Tiene un error de 1 a 2 m: sirve para lomas y bajos marcados.</div>
   </section>
 
   <section id="secComp" hidden>
@@ -588,7 +588,7 @@ function codigoWorker() {
     return {out, transfer: Object.values(out).map(a => a.buffer)};
   }
   const GEDTM = 'https://s3.opengeohub.org/global/dtm/v1.2/gedtm_rf_m_30m_s_20060101_20151231_go_epsg.4326.3855_v1.2.tif';
-  // Elevación del terreno (GEDTM30, en grados WGS84) y elevación relativa igual que el script de GEE:
+  // Elevación del terreno (GEDTM30, en grados WGS84) y elevación relativa:
   // DEM suavizado (media 3x3) menos la media del DEM suavizado en un círculo de 750 m alrededor de cada punto
   const RADIO_REL = 750;
   async function elevacion(m) {
