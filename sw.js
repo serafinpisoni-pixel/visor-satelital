@@ -1,6 +1,6 @@
 // Service worker del visor: guarda la página y las librerías en el teléfono para que abra al instante.
 // La página se muestra desde la copia guardada y se actualiza por detrás (los cambios se ven la vez siguiente).
-const VERSION = 'visor-v1';
+const VERSION = 'visor-v2';
 const LIBS = [
   'https://unpkg.com/leaflet@1.9.4/dist/leaflet.css',
   'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js',
@@ -31,10 +31,11 @@ self.addEventListener('fetch', e => {
   if (req.method !== 'GET') return;
   const u = new URL(req.url);
   if (u.origin === self.location.origin) {
-    // Página: copia guardada al instante, actualización por detrás
+    // Página: copia guardada al instante, actualización por detrás (una sola copia por página, sin parámetros)
+    const clave = u.origin + u.pathname;
     e.respondWith(caches.open(VERSION).then(async c => {
-      const guardada = await c.match(req, {ignoreSearch: true});
-      const red = fetch(req).then(res => { if (res.ok) c.put(req, res.clone()); return res; }).catch(() => null);
+      const guardada = await c.match(clave);
+      const red = fetch(req).then(res => { if (res.ok && !res.redirected) c.put(clave, res.clone()); return res; }).catch(() => null);
       if (guardada) { try { e.waitUntil(red); } catch (err) {} return guardada; }
       return (await red) || (await c.match('./')) || Response.error();
     }));
