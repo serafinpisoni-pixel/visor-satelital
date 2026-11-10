@@ -85,6 +85,12 @@
   .dot{width:16px;height:16px;border-radius:50%;background:#1e88e5;border:3px solid #fff;box-shadow:0 0 6px rgba(0,0,0,.5)}
   #bYo{display:flex;align-items:center;justify-content:center;color:#666}
   #bYo.on{color:#1e88e5}
+  #bYo.nav{background:#1e88e5;color:#fff}
+  .yo{position:relative;width:40px;height:40px;display:flex;align-items:center;justify-content:center}
+  .yo .flecha{position:absolute;left:0;top:0;width:40px;height:40px;display:none}
+  .lote,.punto-lista{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 2px;border-bottom:1px solid var(--borde)}
+  .lote{cursor:pointer}
+  .lote button,.punto-lista button{padding:4px 10px;flex:none}
   #medPill{position:fixed;top:calc(env(safe-area-inset-top) + 90px);right:10px;z-index:900;display:none;flex-direction:column;align-items:flex-end;gap:6px;max-width:72vw}
   #medPill .pill{background:rgba(255,255,255,.96);border-radius:12px;padding:8px 10px;font-size:14px;box-shadow:0 2px 8px rgba(0,0,0,.3)}
   #medPill button{box-shadow:0 2px 8px rgba(0,0,0,.3);background:#fff}
@@ -107,13 +113,15 @@
       <button id="bDraw">✏️ Dibujar</button>
       <label class="btn">📂 Cargar<input id="file" type="file" hidden></label>
     </div>
+    <div class="row"><button id="bLotes">⭐ Mis lotes</button><button id="bGuardarLote" disabled>💾 Guardar lote</button></div>
+    <div id="listaLotes" hidden></div>
     <div class="hint" id="hint"></div>
     <div class="row">
       <label for="radio">Radio alrededor del punto (m)</label>
       <input id="radio" type="number" inputmode="numeric" value="650" min="50" max="15000" step="50">
     </div>
     <div class="muted" id="aoiInfo">Elegí un área: tu ubicación, un punto, un polígono dibujado o un archivo KML / KMZ / GeoJSON / shapefile en .zip.</div>
-    <div class="muted">Tu posición se ve siempre en el mapa (punto azul). Con la flecha de arriba a la derecha el mapa te va siguiendo; si lo movés con el dedo, deja de seguirte. Para girar el mapa usá dos dedos; la brújula que aparece arriba a la derecha lo vuelve al norte.</div>
+    <div class="muted">Tu posición se ve siempre en el mapa (punto azul, con una flechita hacia dónde vas). Botón de la flecha de arriba a la derecha: un toque y el mapa te sigue; dos toques y gira solo según tu rumbo, como un navegador; tres toques lo apaga. Si movés el mapa con el dedo, deja de seguirte. Para girar el mapa a mano usá dos dedos; la brújula que aparece arriba a la derecha lo vuelve al norte. «💾 Guardar lote» guarda el área elegida con un nombre y «⭐ Mis lotes» la vuelve a abrir (los más cercanos a vos aparecen primero).</div>
   </section>
 
   <section>
@@ -244,12 +252,12 @@ function setAOI(geom, etiqueta, ajustar = true) {
   const ha = areaHa(geom);
   if (!(ha > 0)) { toast('El área no es válida.'); return; }
   if (ha > AREA_MAX_HA) { toast(`El área tiene ${fmt0(ha)} ha. El máximo es ${fmt0(AREA_MAX_HA)} ha.`); return; }
-  S.aoi = geom;
+  S.aoi = geom; S.etiquetaAoi = etiqueta;
   if (S.aoiLayer) map.removeLayer(S.aoiLayer);
   S.aoiLayer = L.geoJSON(geom, {style: {color: '#ffffff', weight: 2.5, fill: false, dashArray: null}, interactive: false}).addTo(map);
   if (ajustar) map.fitBounds(S.aoiLayer.getBounds(), {padding: [30, 30], maxZoom: 16});
   $('#aoiInfo').innerHTML = `<b>${etiqueta}</b> · ${fmt0(ha)} ha`;
-  $('#bBuscar').disabled = false; $('#bUltima').disabled = false;
+  $('#bBuscar').disabled = false; $('#bUltima').disabled = false; $('#bGuardarLote').disabled = false;
   const anterior = S.res; limpiarResultado(); liberar(anterior); soltarMemoria(); S.grupos = []; $('#lista').innerHTML = '';
   store.set('aoi', {geom, etiqueta});
 }
@@ -299,8 +307,9 @@ $('#radio').onchange = () => { if (S.centro) setCentro(S.centro[0], S.centro[1],
 
 // Archivos
 function poligonosDe(gj) {
-  const polys = [], puntos = [];
+  const polys = [], puntos = [], feats = [];
   const quitarZ = ring => ring.map(p => [p[0], p[1]]);
+  const nombreDe = p => (p && (p.name || p.Name || p.NAME || p.nombre || p.Nombre || p.NOMBRE || p.lote || p.Lote || p.LOTE)) || '';
   const geo = g => {
     if (!g) return;
     if (g.type === 'Polygon') polys.push(g.coordinates.map(quitarZ));
@@ -309,9 +318,15 @@ function poligonosDe(gj) {
     else if (g.type === 'LineString') { const c = g.coordinates; if (c.length >= 4 && c[0][0] === c[c.length - 1][0] && c[0][1] === c[c.length - 1][1]) polys.push([quitarZ(c)]); }
     else if (g.type === 'Point') puntos.push(g.coordinates);
   };
-  const recorrer = o => { if (!o) return; if (Array.isArray(o)) o.forEach(recorrer); else if (o.type === 'FeatureCollection') o.features.forEach(recorrer); else if (o.type === 'Feature') geo(o.geometry); else geo(o); };
+  const recorrer = o => {
+    if (!o) return;
+    if (Array.isArray(o)) o.forEach(recorrer);
+    else if (o.type === 'FeatureCollection') o.features.forEach(recorrer);
+    else if (o.type === 'Feature') { const k = polys.length; geo(o.geometry); if (polys.length > k) feats.push({nombre: String(nombreDe(o.properties)).trim(), polys: polys.slice(k)}); }
+    else geo(o);
+  };
   recorrer(gj);
-  return {polys, puntos};
+  return {polys, puntos, feats};
 }
 $('#file').onchange = async e => {
   const f = e.target.files[0]; e.target.value = ''; if (!f) return;
@@ -326,10 +341,10 @@ $('#file').onchange = async e => {
     } else if (n.endsWith('.kml')) gj = kml(await f.text());
     else if (n.endsWith('.zip')) gj = await shp(await f.arrayBuffer());
     else gj = JSON.parse(await f.text());
-    const {polys, puntos} = poligonosDe(gj);
+    const {polys, puntos, feats} = poligonosDe(gj);
     busy();
     setModo(null);
-    if (polys.length) { quitarCentro(); setAOI(polys.length === 1 ? {type: 'Polygon', coordinates: polys[0]} : {type: 'MultiPolygon', coordinates: polys}, f.name + (polys.length > 1 ? ` (${polys.length} polígonos)` : '')); }
+    if (polys.length) { quitarCentro(); setAOI(polys.length === 1 ? {type: 'Polygon', coordinates: polys[0]} : {type: 'MultiPolygon', coordinates: polys}, f.name + (polys.length > 1 ? ` (${polys.length} polígonos)` : '')); if (feats.length > 1) ofrecerLotes(feats, f.name); }
     else if (puntos.length) setCentro(puntos[0][1], puntos[0][0], f.name);
     else toast('No encontré polígonos ni puntos en el archivo.');
   } catch (err) { busy(); console.error(err); toast('No pude leer el archivo: ' + err.message, 6000); }
@@ -1095,35 +1110,110 @@ map.on('click', e => {
 });
 
 // ---------- Ubicación en vivo ----------
-// Ubicación en vivo: arranca sola al abrir la app y se pausa cuando la app queda en segundo plano
-const gps = {id: null, pos: null, acc: null, marca: null, circ: null, seguir: false, centrar: false, avisado: false};
+// Arranca sola al abrir la app y se pausa cuando la app queda en segundo plano.
+// Botón de la flecha: 1 toque te sigue (norte arriba), 2 toques modo navegador (el mapa gira según tu rumbo), 3 lo apaga.
+const gps = {id: null, pos: null, acc: null, marca: null, circ: null, modo: 0, centrar: false, avisado: false, rumboGps: null, tGps: 0, brujula: null, oyendo: false};
+const ICONO_YO = '<div class="yo"><svg class="flecha" viewBox="0 0 40 40"><path d="M20 1 29 16 11 16Z" fill="#1e88e5" stroke="#fff" stroke-width="2" stroke-linejoin="round"/></svg><div class="dot"></div></div>';
+const difAng = (a, b) => ((a - b) % 360 + 540) % 360 - 180;
+// En movimiento (más de ~7 km/h) manda el rumbo del GPS; parado o caminando despacio, la brújula del teléfono
+function rumboActual() { return gps.rumboGps != null && Date.now() - gps.tGps < 5000 ? gps.rumboGps : gps.brujula; }
+function pintarRumbo() {
+  const r = rumboActual();
+  const f = gps.marca && gps.marca.getElement() && gps.marca.getElement().querySelector('.flecha');
+  if (f) { f.style.display = r == null ? 'none' : 'block'; if (r != null) f.style.transform = `rotate(${r + map.getBearing()}deg)`; }
+  if (gps.modo === 2 && r != null && Math.abs(difAng(-r, map.getBearing())) > 2) map.setBearing(-r);
+}
+let rumboPend = false;
+function programarRumbo() { if (rumboPend) return; rumboPend = true; setTimeout(() => { rumboPend = false; pintarRumbo(); }, 150); }
 function gpsActualizar(p) {
-  const ll = [p.coords.latitude, p.coords.longitude], acc = p.coords.accuracy; gps.pos = ll; gps.acc = acc;
+  const c = p.coords, ll = [c.latitude, c.longitude], acc = c.accuracy; gps.pos = ll; gps.acc = acc;
+  if (c.heading != null && !isNaN(c.heading) && c.speed != null && c.speed > 2) { gps.rumboGps = c.heading; gps.tGps = Date.now(); }
   if (!gps.marca) {
     gps.circ = L.circle(ll, {radius: acc, color: '#1e88e5', weight: 1.5, fill: false, interactive: false}).addTo(map);
-    gps.marca = L.marker(ll, {icon: L.divIcon({className: '', html: '<div class="dot"></div>', iconSize: [16, 16], iconAnchor: [8, 8]}), interactive: false, zIndexOffset: 1000}).addTo(map);
+    gps.marca = L.marker(ll, {icon: L.divIcon({className: '', html: ICONO_YO, iconSize: [40, 40], iconAnchor: [20, 20]}), interactive: false, zIndexOffset: 1000}).addTo(map);
   } else { gps.marca.setLatLng(ll); gps.circ.setLatLng(ll).setRadius(acc); }
-  if (gps.seguir) { if (gps.centrar) { map.setView(ll, Math.max(map.getZoom(), 16)); gps.centrar = false; } else map.panTo(ll); }
+  if (gps.modo) { if (gps.centrar) { map.setView(ll, Math.max(map.getZoom(), 16)); gps.centrar = false; } else map.panTo(ll); }
+  pintarRumbo();
 }
 function gpsIniciar() {
   if (gps.id != null || !navigator.geolocation) return;
   gps.id = navigator.geolocation.watchPosition(gpsActualizar, err => {
     if (err.code !== 1) return;
-    gpsDetener(); seguir(false);
+    gpsDetener(); setModoYo(0);
     if (!gps.avisado) { gps.avisado = true; toast('No diste permiso de ubicación. Activalo en Ajustes › Privacidad › Localización.', 6000); }
   }, {enableHighAccuracy: true, maximumAge: 5000, timeout: 30000});
 }
 function gpsDetener() { if (gps.id != null) navigator.geolocation.clearWatch(gps.id); gps.id = null; }
-function seguir(si) {
-  gps.seguir = si; $('#bYo').classList.toggle('on', si);
-  if (!si) return;
+// Brújula del teléfono (en el iPhone hay que pedir permiso desde un toque)
+function alGirar(e) {
+  let h = e.webkitCompassHeading != null ? e.webkitCompassHeading : (e.absolute && e.alpha != null ? 360 - e.alpha : null);
+  if (h == null || isNaN(h)) return;
+  h = (h + ((screen.orientation && screen.orientation.angle) || window.orientation || 0) + 360) % 360;
+  gps.brujula = gps.brujula == null ? h : (gps.brujula + difAng(h, gps.brujula) * 0.3 + 360) % 360;
+  programarRumbo();
+}
+async function brujulaIniciar() {
+  if (gps.oyendo || typeof DeviceOrientationEvent === 'undefined') return;
+  try { if (typeof DeviceOrientationEvent.requestPermission === 'function' && await DeviceOrientationEvent.requestPermission() !== 'granted') return; } catch (e) { return; }
+  gps.oyendo = true;
+  window.addEventListener('ondeviceorientationabsolute' in window ? 'deviceorientationabsolute' : 'deviceorientation', alGirar);
+}
+function setModoYo(m, mantenerGiro = false) {
+  const antes = gps.modo; gps.modo = m;
+  const b = $('#bYo'); b.classList.toggle('on', m === 1); b.classList.toggle('nav', m === 2);
+  b.title = ['Seguir mi ubicación', 'Girar el mapa según mi rumbo', 'Dejar de seguirme'][m];
+  if (antes === 2 && m !== 2 && !mantenerGiro) map.setBearing(0);
+  if (!m) return;
   gpsIniciar();
   if (gps.pos) map.setView(gps.pos, Math.max(map.getZoom(), 16)); else { gps.centrar = true; toast('Buscando señal de GPS…'); }
+  if (m === 2) { pintarRumbo(); if (rumboActual() == null) toast('El mapa se orienta cuando empezás a moverte o girás el teléfono.', 4000); }
 }
-$('#bYo').onclick = e => { e.preventDefault(); gps.avisado = false; seguir(!gps.seguir); };
-map.on('dragstart', () => { if (gps.seguir) seguir(false); });
+$('#bYo').onclick = e => { e.preventDefault(); gps.avisado = false; brujulaIniciar(); setModoYo((gps.modo + 1) % 3); };
+map.on('dragstart', () => { if (gps.modo) setModoYo(0, true); });
+map.on('rotate', programarRumbo);
+if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission !== 'function') brujulaIniciar();
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') gpsIniciar(); else gpsDetener(); });
 gpsIniciar();
+
+// ---------- Mis lotes (guardados en el teléfono) ----------
+const lotes = () => store.get('lotes') || [];
+function guardarLotes(l) { try { localStorage.setItem('lotes', JSON.stringify(l)); return true; } catch (e) { toast('No hay más lugar en el teléfono para guardar lotes.', 5000); return false; } }
+function distM(a, b) { const R = 6371008.8, r = Math.PI / 180, dLa = (b[0] - a[0]) * r, dLo = (b[1] - a[1]) * r; const h = Math.sin(dLa / 2) ** 2 + Math.cos(a[0] * r) * Math.cos(b[0] * r) * Math.sin(dLo / 2) ** 2; return 2 * R * Math.asin(Math.sqrt(h)); }
+function nuevoLote(nombre, geom) { const [w, s, e, n] = bboxDe(geom); return {id: Date.now().toString(36) + Math.random().toString(36).slice(2, 7), nombre, geom, ha: areaHa(geom), c: [(s + n) / 2, (w + e) / 2]}; }
+function pintarLotes() {
+  const el = $('#listaLotes'); if (el.hidden) return;
+  const yo = gps.pos, l = lotes().map(x => Object.assign({}, x, {d: yo ? distM(yo, x.c) : null}));
+  if (!l.length) { el.innerHTML = '<div class="muted">Todavía no guardaste lotes. Elegí un área y tocá «💾 Guardar lote».</div>'; return; }
+  l.sort((a, b) => yo ? a.d - b.d : a.nombre.localeCompare(b.nombre, 'es'));
+  const dist = d => d == null ? '' : ' · ' + (d < 1000 ? fmt0(d) + ' m' : fmt(d / 1000, 1) + ' km');
+  el.innerHTML = l.map(x => `<div class="lote" data-id="${x.id}"><span><b>${esc(x.nombre)}</b> <span class="muted">· ${fmt0(x.ha)} ha${dist(x.d)}</span></span><button class="borrarL" data-id="${x.id}">✕</button></div>`).join('');
+  el.querySelectorAll('.lote').forEach(d => d.onclick = e => {
+    if (e.target.closest('.borrarL')) return;
+    const x = lotes().find(y => y.id === d.dataset.id); if (!x) return;
+    setModo(null); quitarCentro(); setAOI(x.geom, x.nombre);
+    el.hidden = true; $('#bLotes').classList.remove('on');
+  });
+  el.querySelectorAll('.borrarL').forEach(b => b.onclick = () => {
+    const x = lotes().find(y => y.id === b.dataset.id);
+    if (x && confirm(`¿Borrar el lote «${x.nombre}» de Mis lotes?`)) { guardarLotes(lotes().filter(y => y.id !== x.id)); pintarLotes(); }
+  });
+}
+$('#bLotes').onclick = () => { const el = $('#listaLotes'); el.hidden = !el.hidden; $('#bLotes').classList.toggle('on', !el.hidden); pintarLotes(); };
+$('#bGuardarLote').onclick = () => {
+  if (!S.aoi) return;
+  const sugerido = /^(Polígono dibujado|Zona medida|Punto|Mi ubicación)/.test(S.etiquetaAoi || '') ? '' : String(S.etiquetaAoi || '').replace(/\.(kmz|kml|zip|geojson|json)\b.*$/i, '');
+  const nombre = prompt('Nombre del lote:', sugerido); if (nombre === null) return;
+  const n = nombre.trim() || 'Lote ' + (lotes().length + 1);
+  const l = lotes(), x = nuevoLote(n, S.aoi); l.push(x);
+  if (guardarLotes(l)) { S.etiquetaAoi = n; $('#aoiInfo').innerHTML = `<b>${esc(n)}</b> · ${fmt0(x.ha)} ha`; store.set('aoi', {geom: S.aoi, etiqueta: n}); toast(`Lote «${n}» guardado.`); pintarLotes(); }
+};
+// Un archivo con varios lotes (KML / KMZ / shapefile de un campo): se ofrece guardarlos todos de una vez
+function ofrecerLotes(feats, archivo) {
+  if (!confirm(`El archivo tiene ${feats.length} lotes. ¿Los guardo en «Mis lotes»? Después los elegís de la lista.`)) return;
+  const base = archivo.replace(/\.(kmz|kml|zip|geojson|json)$/i, ''), l = lotes();
+  feats.forEach((f, i) => l.push(nuevoLote(f.nombre || `${base} ${i + 1}`, f.polys.length === 1 ? {type: 'Polygon', coordinates: f.polys[0]} : {type: 'MultiPolygon', coordinates: f.polys})));
+  if (guardarLotes(l)) { toast(`Guardé ${feats.length} lotes en «Mis lotes».`, 4000); pintarLotes(); }
+}
 
 // ---------- Exportar JPG ----------
 async function compartir(f) {
