@@ -85,7 +85,6 @@
   .dot{width:16px;height:16px;border-radius:50%;background:#1e88e5;border:3px solid #fff;box-shadow:0 0 6px rgba(0,0,0,.5)}
   #bYo{display:flex;align-items:center;justify-content:center;color:#666}
   #bYo.on{color:#1e88e5}
-  #bYo.nav{background:#1e88e5;color:#fff}
   .yo{position:relative;width:40px;height:40px;display:flex;align-items:center;justify-content:center}
   .yo .flecha{position:absolute;left:0;top:0;width:40px;height:40px;display:none}
   .lote,.punto-lista{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 2px;border-bottom:1px solid var(--borde)}
@@ -121,7 +120,7 @@
       <input id="radio" type="number" inputmode="numeric" value="650" min="50" max="15000" step="50">
     </div>
     <div class="muted" id="aoiInfo">Elegí un área: tu ubicación, un punto, un polígono dibujado o un archivo KML / KMZ / GeoJSON / shapefile en .zip.</div>
-    <div class="muted">Tu posición se ve siempre en el mapa (punto azul, con una flechita hacia dónde vas). Botón de la flecha de arriba a la derecha: un toque y el mapa te sigue; dos toques y gira solo según tu rumbo, como un navegador; tres toques lo apaga. Si movés el mapa con el dedo, deja de seguirte. Para girar el mapa a mano usá dos dedos; la brújula que aparece arriba a la derecha lo vuelve al norte. «💾 Guardar lote» guarda el área elegida con un nombre y «⭐ Mis lotes» la vuelve a abrir (los más cercanos a vos aparecen primero).</div>
+    <div class="muted">Tu posición se ve siempre en el mapa (punto azul, con una flechita hacia dónde vas) y el mapa te va siguiendo. Para girar el mapa usá dos dedos. Si lo movés con el dedo o elegís otra área deja de seguirte; la flecha de arriba a la derecha te vuelve a centrar con el norte arriba. «💾 Guardar lote» guarda el área elegida con un nombre y «⭐ Mis lotes» la vuelve a abrir (los más cercanos a vos aparecen primero).</div>
   </section>
 
   <section>
@@ -214,8 +213,6 @@ L.control.zoom({position: 'topright'}).addTo(map);
 // Botón «seguirme» (debajo del zoom)
 L.Control.Yo = L.Control.extend({options: {position: 'topright'}, onAdd() { const d = L.DomUtil.create('div', 'leaflet-bar'); d.innerHTML = '<a href="#" id="bYo" role="button" title="Seguir mi ubicación"><svg width="18" height="18" viewBox="0 0 24 24"><path d="M21 3 3 10.5l7.2 2.3L12.5 20z" fill="currentColor"/></svg></a>'; L.DomEvent.disableClickPropagation(d); return d; }});
 new L.Control.Yo().addTo(map);
-// Brújula: aparece cuando el mapa está rotado (girando con dos dedos); tocarla lo vuelve al norte
-L.control.rotate({position: 'topright', closeOnZeroBearing: true, visualizePitch: false}).addTo(map);
 map.pm.setLang('es');
 
 const S = { aoi: null, aoiLayer: null, centro: null, centroLayer: null, modo: null, grupos: [], sel: null, res: null, overlay: null, vista: 'rgb', jpg: {} };
@@ -255,6 +252,7 @@ function setAOI(geom, etiqueta, ajustar = true) {
   S.aoi = geom; S.etiquetaAoi = etiqueta;
   if (S.aoiLayer) map.removeLayer(S.aoiLayer);
   S.aoiLayer = L.geoJSON(geom, {style: {color: '#ffffff', weight: 2.5, fill: false, dashArray: null}, interactive: false}).addTo(map);
+  if (ajustar && gps.pos) setSeguir(false);
   if (ajustar) map.fitBounds(S.aoiLayer.getBounds(), {padding: [30, 30], maxZoom: 16});
   $('#aoiInfo').innerHTML = `<b>${etiqueta}</b> · ${fmt0(ha)} ha`;
   $('#bBuscar').disabled = false; $('#bUltima').disabled = false; $('#bGuardarLote').disabled = false;
@@ -1110,9 +1108,9 @@ map.on('click', e => {
 });
 
 // ---------- Ubicación en vivo ----------
-// Arranca sola al abrir la app y se pausa cuando la app queda en segundo plano.
-// Botón de la flecha: 1 toque te sigue (norte arriba), 2 toques modo navegador (el mapa gira según tu rumbo), 3 lo apaga.
-const gps = {id: null, pos: null, acc: null, marca: null, circ: null, modo: 0, centrar: false, avisado: false, rumboGps: null, tGps: 0, brujula: null, oyendo: false};
+// El mapa te sigue siempre. Si lo movés con el dedo o elegís otra área deja de seguirte hasta que tocás la flecha,
+// que además lo vuelve al norte. Girarlo con dos dedos no corta el seguimiento. La flechita del punto azul marca hacia dónde vas.
+const gps = {id: null, pos: null, acc: null, marca: null, circ: null, seguir: true, primera: true, centrar: false, avisado: false, rumboGps: null, tGps: 0, brujula: null, oyendo: false};
 const ICONO_YO = '<div class="yo"><svg class="flecha" viewBox="0 0 40 40"><path d="M20 1 29 16 11 16Z" fill="#1e88e5" stroke="#fff" stroke-width="2" stroke-linejoin="round"/></svg><div class="dot"></div></div>';
 const difAng = (a, b) => ((a - b) % 360 + 540) % 360 - 180;
 // En movimiento (más de ~7 km/h) manda el rumbo del GPS; parado o caminando despacio, la brújula del teléfono
@@ -1121,10 +1119,13 @@ function pintarRumbo() {
   const r = rumboActual();
   const f = gps.marca && gps.marca.getElement() && gps.marca.getElement().querySelector('.flecha');
   if (f) { f.style.display = r == null ? 'none' : 'block'; if (r != null) f.style.transform = `rotate(${r + map.getBearing()}deg)`; }
-  if (gps.modo === 2 && r != null && Math.abs(difAng(-r, map.getBearing())) > 2) map.setBearing(-r);
 }
 let rumboPend = false;
 function programarRumbo() { if (rumboPend) return; rumboPend = true; setTimeout(() => { rumboPend = false; pintarRumbo(); }, 150); }
+function setSeguir(si) {
+  gps.seguir = si; const b = $('#bYo'); b.classList.toggle('on', si);
+  b.title = si ? 'Te está siguiendo · tocá para volver al norte' : 'Volver a mi ubicación con el norte arriba';
+}
 function gpsActualizar(p) {
   const c = p.coords, ll = [c.latitude, c.longitude], acc = c.accuracy; gps.pos = ll; gps.acc = acc;
   if (c.heading != null && !isNaN(c.heading) && c.speed != null && c.speed > 2) { gps.rumboGps = c.heading; gps.tGps = Date.now(); }
@@ -1132,19 +1133,24 @@ function gpsActualizar(p) {
     gps.circ = L.circle(ll, {radius: acc, color: '#1e88e5', weight: 1.5, fill: false, interactive: false}).addTo(map);
     gps.marca = L.marker(ll, {icon: L.divIcon({className: '', html: ICONO_YO, iconSize: [40, 40], iconAnchor: [20, 20]}), interactive: false, zIndexOffset: 1000}).addTo(map);
   } else { gps.marca.setLatLng(ll); gps.circ.setLatLng(ll).setRadius(acc); }
-  if (gps.modo) { if (gps.centrar) { map.setView(ll, Math.max(map.getZoom(), 16)); gps.centrar = false; } else map.panTo(ll); }
+  if (gps.primera) {
+    // Al abrir: si el último lote abierto queda lejos (más de 3 km), se muestra el lote y no se te sigue
+    gps.primera = false;
+    if (S.aoi) { const [w, s, e, n] = bboxDe(S.aoi); if (distM(ll, [(s + n) / 2, (w + e) / 2]) > 3000) setSeguir(false); }
+    if (gps.seguir) map.setView(ll, Math.max(map.getZoom(), 16));
+  } else if (gps.seguir) { if (gps.centrar) { map.setView(ll, Math.max(map.getZoom(), 16)); gps.centrar = false; } else map.panTo(ll); }
   pintarRumbo();
 }
 function gpsIniciar() {
   if (gps.id != null || !navigator.geolocation) return;
   gps.id = navigator.geolocation.watchPosition(gpsActualizar, err => {
     if (err.code !== 1) return;
-    gpsDetener(); setModoYo(0);
+    gpsDetener(); setSeguir(false);
     if (!gps.avisado) { gps.avisado = true; toast('No diste permiso de ubicación. Activalo en Ajustes › Privacidad › Localización.', 6000); }
   }, {enableHighAccuracy: true, maximumAge: 5000, timeout: 30000});
 }
 function gpsDetener() { if (gps.id != null) navigator.geolocation.clearWatch(gps.id); gps.id = null; }
-// Brújula del teléfono (en el iPhone hay que pedir permiso desde un toque)
+// Brújula del teléfono (en el iPhone se pide permiso con el primer toque en la pantalla)
 function alGirar(e) {
   let h = e.webkitCompassHeading != null ? e.webkitCompassHeading : (e.absolute && e.alpha != null ? 360 - e.alpha : null);
   if (h == null || isNaN(h)) return;
@@ -1158,21 +1164,17 @@ async function brujulaIniciar() {
   gps.oyendo = true;
   window.addEventListener('ondeviceorientationabsolute' in window ? 'deviceorientationabsolute' : 'deviceorientation', alGirar);
 }
-function setModoYo(m, mantenerGiro = false) {
-  const antes = gps.modo; gps.modo = m;
-  const b = $('#bYo'); b.classList.toggle('on', m === 1); b.classList.toggle('nav', m === 2);
-  b.title = ['Seguir mi ubicación', 'Girar el mapa según mi rumbo', 'Dejar de seguirme'][m];
-  if (antes === 2 && m !== 2 && !mantenerGiro) map.setBearing(0);
-  if (!m) return;
-  gpsIniciar();
+$('#bYo').onclick = e => {
+  e.preventDefault(); gps.avisado = false; brujulaIniciar(); gpsIniciar();
+  map.setBearing(0); setSeguir(true); gps.primera = false;
   if (gps.pos) map.setView(gps.pos, Math.max(map.getZoom(), 16)); else { gps.centrar = true; toast('Buscando señal de GPS…'); }
-  if (m === 2) { pintarRumbo(); if (rumboActual() == null) toast('El mapa se orienta cuando empezás a moverte o girás el teléfono.', 4000); }
-}
-$('#bYo').onclick = e => { e.preventDefault(); gps.avisado = false; brujulaIniciar(); setModoYo((gps.modo + 1) % 3); };
-map.on('dragstart', () => { if (gps.modo) setModoYo(0, true); });
+};
+map.on('dragstart', () => { if (gps.seguir) setSeguir(false); });
 map.on('rotate', programarRumbo);
 if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission !== 'function') brujulaIniciar();
+else ['touchend', 'click'].forEach(ev => document.addEventListener(ev, () => brujulaIniciar(), {once: true}));
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') gpsIniciar(); else gpsDetener(); });
+setSeguir(true);
 gpsIniciar();
 
 // ---------- Mis lotes (guardados en el teléfono) ----------
