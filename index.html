@@ -20,15 +20,17 @@
   #chip{position:fixed;top:calc(env(safe-area-inset-top) + 10px);left:10px;z-index:900;background:rgba(31,61,43,.92);color:#fff;
         padding:7px 12px;border-radius:20px;font-size:14px;font-weight:600;box-shadow:0 2px 8px rgba(0,0,0,.3)}
   #sheet{position:fixed;left:0;right:0;bottom:0;z-index:1000;background:var(--fondo);border-radius:16px 16px 0 0;
-         box-shadow:0 -4px 20px rgba(0,0,0,.25);max-height:58vh;overflow-y:auto;-webkit-overflow-scrolling:touch;
-         padding:0 14px calc(env(safe-area-inset-bottom) + 12px);transition:max-height .25s}
-  #sheet.min{max-height:64px;overflow:hidden}
-  #grab{position:sticky;top:0;background:var(--fondo);padding:8px 0 6px;text-align:center;cursor:pointer;z-index:2}
+         box-shadow:0 -4px 20px rgba(0,0,0,.25);height:var(--alto,42vh);overflow-y:auto;-webkit-overflow-scrolling:touch;
+         padding:0 14px calc(env(safe-area-inset-bottom) + 12px);transition:height .2s}
+  #sheet.min{height:64px !important;overflow:hidden}
+  #sheet.arrastrando{transition:none}
+  #grab{position:sticky;top:0;background:var(--fondo);padding:10px 0 8px;text-align:center;cursor:ns-resize;z-index:2;touch-action:none;user-select:none;-webkit-user-select:none}
   #grab span{display:inline-block;width:42px;height:5px;border-radius:3px;background:#c7c7cc}
   #grab div{font-size:12px;color:var(--gris);margin-top:4px}
   @media (min-width:900px){
-    #sheet{left:12px;right:auto;bottom:12px;top:calc(env(safe-area-inset-top) + 56px);width:380px;max-height:none;border-radius:16px}
-    #sheet.min{max-height:64px;top:auto}
+    #sheet{left:12px;right:auto;bottom:12px;top:calc(env(safe-area-inset-top) + 56px);width:380px;height:auto;max-height:none;border-radius:16px}
+    #sheet.min{top:auto}
+    #grab{cursor:pointer}
   }
   h3{font-size:15px;margin:14px 0 8px;color:var(--verde)}
   .row{display:flex;gap:8px;align-items:center;margin:6px 0;flex-wrap:wrap}
@@ -100,7 +102,7 @@
 <div id="chip">Visor satelital · Sentinel-2</div>
 
 <div id="sheet">
-  <div id="grab"><span></span><div id="grabTxt">Ocultar panel</div></div>
+  <div id="grab"><span></span><div id="grabTxt">Arrastrá para ajustar · tocá para ocultar</div></div>
 
   <section>
     <h3>1 · Área</h3>
@@ -1280,8 +1282,35 @@ $('#bMedDist').onclick = () => iniciarMedicion('linea');
 $('#bMedSup').onclick = () => iniciarMedicion('zona');
 
 // ---------- Panel ----------
-function minimizar(m) { $('#sheet').classList.toggle('min', m); $('#grabTxt').textContent = m ? 'Mostrar panel' : 'Ocultar panel'; }
-$('#grab').onclick = () => minimizar(!$('#sheet').classList.contains('min'));
+function minimizar(m) { $('#sheet').classList.toggle('min', m); $('#grabTxt').textContent = m ? 'Tocá o arrastrá para abrir el panel' : (window.innerWidth < 900 ? 'Arrastrá para ajustar · tocá para ocultar' : 'Ocultar panel'); }
+// Panel con altura regulable en el celular: se arrastra la manija; un toque lo oculta o lo muestra
+(function () {
+  const sheet = $('#sheet'), grab = $('#grab'), esCelu = () => window.innerWidth < 900;
+  const maxAlto = () => Math.round(window.innerHeight * 0.9);
+  const fijar = px => { px = Math.max(140, Math.min(maxAlto(), px)); sheet.style.setProperty('--alto', px + 'px'); store.set('altoPanel', px / window.innerHeight); };
+  const guardado = store.get('altoPanel');
+  if (guardado) sheet.style.setProperty('--alto', Math.round(Math.min(0.9, guardado) * window.innerHeight) + 'px');
+  if (!esCelu()) $('#grabTxt').textContent = 'Ocultar panel';
+  let y0 = null, h0 = 0, movio = false;
+  grab.addEventListener('pointerdown', e => {
+    if (!esCelu()) return;
+    y0 = e.clientY; h0 = sheet.getBoundingClientRect().height; movio = false;
+    try { grab.setPointerCapture(e.pointerId); } catch (x) {}
+    sheet.classList.add('arrastrando');
+  });
+  grab.addEventListener('pointermove', e => {
+    if (y0 === null) return;
+    const dy = y0 - e.clientY;
+    if (Math.abs(dy) > 6) movio = true;
+    if (!movio) return;
+    const h = h0 + dy;
+    if (h < 110) sheet.classList.add('min'); else { sheet.classList.remove('min'); fijar(h); }
+  });
+  const soltar = () => { if (y0 === null) return; y0 = null; sheet.classList.remove('arrastrando'); minimizar(sheet.classList.contains('min')); };
+  grab.addEventListener('pointerup', soltar);
+  grab.addEventListener('pointercancel', soltar);
+  grab.addEventListener('click', () => { if (movio) { movio = false; return; } minimizar(!sheet.classList.contains('min')); });
+})();
 
 // Ícono para «Agregar a inicio» (se dibuja acá para no depender de archivos aparte)
 (function () {
