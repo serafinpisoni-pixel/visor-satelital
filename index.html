@@ -76,7 +76,7 @@
   .pix{image-rendering:pixelated;image-rendering:crisp-edges}
   .hint{font-size:13px;background:#fff8d6;border-radius:10px;padding:8px 10px;margin:6px 0;display:none}
   .seg{flex-wrap:wrap}
-  .seg button{flex:1 1 30%;font-size:13px;padding:8px 6px}
+  .seg button{flex:1 1 22%;font-size:13px;padding:8px 6px}
   .chk{display:flex;align-items:center;gap:8px;font-size:14px;margin:8px 0}
   .chk input{width:20px;height:20px;flex:none}
   #rec{position:fixed;top:calc(env(safe-area-inset-top) + 90px);left:10px;z-index:900;display:none;flex-direction:column;gap:6px;max-width:70vw}
@@ -135,13 +135,13 @@
 
   <section id="secRes" hidden>
     <h3>3 · Resultado <span id="resFecha" class="muted"></span></h3>
-    <div class="seg" id="seg"><button data-v="rgb" class="act">Color real</button><button data-v="fci">Falso color</button><button data-v="ndvi">NDVI</button><button data-v="ndre">NDRE</button><button data-v="ndmi">Humedad</button></div>
+    <div class="seg" id="seg"><button data-v="rgb" class="act">Color real</button><button data-v="ndvi">NDVI</button><button data-v="ndre">NDRE</button><button data-v="ndmi">Humedad</button></div>
     <label class="chk"><input type="checkbox" id="auto"> Contraste automático (ajusta los colores a los valores del lote)</label>
     <div id="leyenda" style="display:none;margin-top:4px"></div>
     <div class="row"><label>Transparencia</label><input id="opac" type="range" min="0" max="100" value="100"></div>
     <div id="stats"></div>
     <div class="row"><button id="bJpg" class="primary">⬇️ Descargar JPG</button><button id="bComparar">🔀 Comparar con otra fecha</button></div>
-    <div class="muted">Tocá el mapa para ver el valor de un punto. NDRE: vigor cuando el cultivo ya cerró el surco. Humedad: agua en la vegetación (más azul, más húmedo). Falso color: la vegetación activa se ve roja.</div>
+    <div class="muted">Tocá el mapa para ver el valor de un punto. NDRE: vigor cuando el cultivo ya cerró el surco. Humedad: agua en la vegetación (más azul, más húmedo).</div>
   </section>
 
   <section id="secComp" hidden>
@@ -728,7 +728,6 @@ const PAL_DIF = ['#b2182b', '#d6604d', '#f4a582', '#fddbc7', '#f7f7f7', '#d9f0d3
 const nd = (a, c) => (a + c) !== 0 ? (a - c) / (a + c) : NaN;
 const VISTAS = {
   rgb: {nombre: 'Color real', archivo: 'Color_real'},
-  fci: {nombre: 'Falso color', archivo: 'Falso_color', bandas: ['green']},
   ndvi: {nombre: 'NDVI', archivo: 'NDVI', bandas: [], indice: (b, i) => nd(b.nir[i], b.red[i]), rango: [0, 0.9], paleta: PALETA},
   ndre: {nombre: 'NDRE', archivo: 'NDRE', bandas: ['nir08', 'rededge1'], indice: (b, i) => nd(b.nir08[i], b.rededge1[i]), rango: [0, 0.6], paleta: PALETA},
   ndmi: {nombre: 'Humedad (NDMI)', archivo: 'Humedad_NDMI', bandas: ['nir08', 'swir16'], indice: (b, i) => nd(b.nir08[i], b.swir16[i]), rango: [-0.2, 0.5], paleta: PAL_HUM},
@@ -780,12 +779,10 @@ function lienzo(r, v) {
   const {G, N} = r, cv = document.createElement('canvas'); cv.width = G.nx; cv.height = G.ny;
   const ctx = cv.getContext('2d'), img = ctx.createImageData(G.nx, G.ny), d = img.data;
   const vals = V.indice ? valores(r, v) : null;
-  const st = (x, m) => 255 * Math.pow(Math.max(0, Math.min(1, x / m)), 0.85);
   for (let i = 0; i < N; i++) {
     if (!G.mask[i] || !r.lleno[i]) continue;
     let c;
     if (v === 'rgb') c = [r.rgb[i * 3], r.rgb[i * 3 + 1], r.rgb[i * 3 + 2]];
-    else if (v === 'fci') c = [st(r.b.nir[i], 0.45), st(r.b.red[i], 0.15), st(r.b.green[i], 0.15)];
     else c = isNaN(vals[i]) ? [150, 150, 150] : colorPal(V.paleta, (vals[i] - rango[0]) / (rango[1] - rango[0]));
     d[i * 4] = c[0]; d[i * 4 + 1] = c[1]; d[i * 4 + 2] = c[2]; d[i * 4 + 3] = 255;
   }
